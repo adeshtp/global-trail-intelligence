@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# Environment
+.env
+
+# Next.js
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+
+# Data
+data/raw/
+data/processed/
+data/dem/
+
+# ML
+models/*.pkl
+models/*.joblib
+models/*.pt
+models/*.pth
+
+# OS
+.DS_Store
+
+# IDE
+.vscode/
+
+# Cache
+.cache/

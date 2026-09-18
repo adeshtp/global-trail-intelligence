@@ -44,15 +44,30 @@ type TrailGeometry = {
   name: string | null;
 
   route_type: string | null;
+
   highway_type: string | null;
 
   description: string | null;
 
   difficulty: string | null;
+
   surface: string | null;
+
   trail_visibility: string | null;
 
   distance_km: number;
+
+  start_coordinate?: [
+    number,
+    number
+  ] | null;
+
+  end_coordinate?: [
+    number,
+    number
+  ] | null;
+
+  endpoint_available?: boolean;
 
   geometry: {
     type:
@@ -86,6 +101,41 @@ type ViewState =
   | "map"
   | "terrain";
 
+type BaseMap =
+  | "satellite"
+  | "osm";
+
+type Coordinate = [
+  number,
+  number
+];
+
+/*
+ * ============================================================
+ * FINAL MAP COLORS
+ * ============================================================
+ *
+ * Main route:
+ * bright hiking green
+ *
+ * This is deliberately NOT dark green.
+ */
+
+const TRAIL_GREEN =
+  "#63E96B";
+
+const TRAIL_CASING =
+  "#10231A";
+
+const OTHER_TRAIL =
+  "#C8E8CF";
+
+const START_GREEN =
+  "#16A34A";
+
+const END_RED =
+  "#EF4444";
+
 export default function CesiumMap({
   location,
   mapTrails,
@@ -102,29 +152,273 @@ export default function CesiumMap({
   const viewerRef =
     useRef<any>(null);
 
-  const [viewerReady, setViewerReady] =
-    useState(false);
+  const osmLayerRef =
+    useRef<any>(null);
 
-  const [layersOpen, setLayersOpen] =
-    useState(false);
+  const satelliteLayerRef =
+    useRef<any>(null);
 
-  const [viewState, setViewState] =
-    useState<ViewState>(
-      "map"
-    );
+  const [
+    viewerReady,
+    setViewerReady,
+  ] = useState(false);
+
+  const [
+    layersOpen,
+    setLayersOpen,
+  ] = useState(false);
+
+  const [
+    viewState,
+    setViewState,
+  ] = useState<ViewState>(
+    "map"
+  );
+
+  const [
+    baseMap,
+    setBaseMap,
+  ] = useState<BaseMap>(
+    "osm"
+  );
+
+  const [
+    satelliteAvailable,
+    setSatelliteAvailable,
+  ] = useState(false);
 
   const locationRequestRef =
     useRef(0);
 
-  const trailRequestRef =
-    useRef(0);
+  /*
+   * ============================================================
+   * GEOMETRY HELPERS
+   * ============================================================
+   */
 
-  /* ==========================================================
-     INITIALIZE CESIUM
-  ========================================================== */
+  function geometryToSegments(
+    geometry:
+      | TrailGeometry["geometry"]
+      | MapTrail["geometry"]
+  ): Coordinate[][] {
+    if (!geometry) {
+      return [];
+    }
+
+    if (
+      geometry.type ===
+      "LineString"
+    ) {
+      const segment =
+        geometry.coordinates as number[][];
+
+      return [
+        segment
+          .filter(
+            (coordinate) =>
+              Array.isArray(
+                coordinate
+              ) &&
+              coordinate.length >=
+                2 &&
+              Number.isFinite(
+                Number(
+                  coordinate[0]
+                )
+              ) &&
+              Number.isFinite(
+                Number(
+                  coordinate[1]
+                )
+              )
+          )
+          .map(
+            (coordinate) =>
+              [
+                Number(
+                  coordinate[0]
+                ),
+                Number(
+                  coordinate[1]
+                ),
+              ] as Coordinate
+          ),
+      ].filter(
+        (segment) =>
+          segment.length >= 2
+      );
+    }
+
+    if (
+      geometry.type ===
+      "MultiLineString"
+    ) {
+      return (
+        geometry.coordinates as number[][][]
+      )
+        .map(
+          (segment) =>
+            segment
+              .filter(
+                (coordinate) =>
+                  Array.isArray(
+                    coordinate
+                  ) &&
+                  coordinate.length >=
+                    2 &&
+                  Number.isFinite(
+                    Number(
+                      coordinate[0]
+                    )
+                  ) &&
+                  Number.isFinite(
+                    Number(
+                      coordinate[1]
+                    )
+                  )
+              )
+              .map(
+                (coordinate) =>
+                  [
+                    Number(
+                      coordinate[0]
+                    ),
+                    Number(
+                      coordinate[1]
+                    ),
+                  ] as Coordinate
+              )
+        )
+        .filter(
+          (segment) =>
+            segment.length >= 2
+        );
+    }
+
+    return [];
+  }
+
+  /*
+   * ============================================================
+   * SIMPLE ROUTE BOUNDS
+   * ============================================================
+   */
+
+  function calculateRouteBounds(
+    coordinates: Coordinate[]
+  ) {
+    if (
+      coordinates.length ===
+      0
+    ) {
+      return null;
+    }
+
+    let west = Infinity;
+    let east = -Infinity;
+    let south = Infinity;
+    let north = -Infinity;
+
+    coordinates.forEach(
+      ([
+        longitude,
+        latitude,
+      ]) => {
+        west =
+          Math.min(
+            west,
+            longitude
+          );
+
+        east =
+          Math.max(
+            east,
+            longitude
+          );
+
+        south =
+          Math.min(
+            south,
+            latitude
+          );
+
+        north =
+          Math.max(
+            north,
+            latitude
+          );
+      }
+    );
+
+    return {
+      west,
+      east,
+      south,
+      north,
+
+      centerLongitude:
+        (
+          west +
+          east
+        ) /
+        2,
+
+      centerLatitude:
+        (
+          south +
+          north
+        ) /
+        2,
+    };
+  }
+
+  /*
+   * ============================================================
+   * REMOVE ENTITIES
+   * ============================================================
+   */
+
+  function removeEntitiesByPrefix(
+    prefix: string
+  ) {
+    const viewer =
+      viewerRef.current;
+
+    if (
+      !viewer ||
+      viewer.isDestroyed()
+    ) {
+      return;
+    }
+
+    viewer.entities.values
+      .slice()
+      .forEach(
+        (entity: any) => {
+          if (
+            typeof entity.id ===
+              "string" &&
+            entity.id.startsWith(
+              prefix
+            )
+          ) {
+            viewer.entities.remove(
+              entity
+            );
+          }
+        }
+      );
+  }
+
+  /*
+   * ============================================================
+   * CESIUM INITIALIZATION
+   * ============================================================
+   */
 
   useEffect(() => {
-    let cancelled = false;
+    let cancelled =
+      false;
 
     async function initialize() {
       if (
@@ -142,7 +436,9 @@ export default function CesiumMap({
         "/cesium/";
 
       const Cesium =
-        await import("cesium");
+        await import(
+          "cesium"
+        );
 
       if (
         cancelled ||
@@ -164,9 +460,10 @@ export default function CesiumMap({
         new Cesium.Viewer(
           containerRef.current,
           {
-            terrain: token
-              ? Cesium.Terrain.fromWorldTerrain()
-              : undefined,
+            terrain:
+              token
+                ? Cesium.Terrain.fromWorldTerrain()
+                : undefined,
 
             animation:
               false,
@@ -224,9 +521,9 @@ export default function CesiumMap({
           "none";
       }
 
-      /* ------------------------------------------------------
-         OSM base layer
-      ------------------------------------------------------ */
+      /*
+       * OSM basemap.
+       */
 
       const osmProvider =
         new Cesium.UrlTemplateImageryProvider(
@@ -242,15 +539,77 @@ export default function CesiumMap({
           }
         );
 
-      viewer.imageryLayers.removeAll();
+      const osmLayer =
+        viewer.imageryLayers.addImageryProvider(
+          osmProvider
+        );
 
-      viewer.imageryLayers.addImageryProvider(
-        osmProvider
-      );
+      osmLayerRef.current =
+        osmLayer;
 
-      /* ------------------------------------------------------
-         Camera controller
-      ------------------------------------------------------ */
+      /*
+       * Satellite.
+       */
+
+      if (token) {
+        try {
+          const satelliteProvider =
+            await Cesium.createWorldImageryAsync(
+              {
+                style:
+                  Cesium.IonWorldImageryStyle.AERIAL,
+              }
+            );
+
+          if (
+            cancelled ||
+            viewer.isDestroyed()
+          ) {
+            return;
+          }
+
+          const satelliteLayer =
+            viewer.imageryLayers.addImageryProvider(
+              satelliteProvider
+            );
+
+          satelliteLayerRef.current =
+            satelliteLayer;
+
+          satelliteLayer.show =
+            true;
+
+          osmLayer.show =
+            false;
+
+          setSatelliteAvailable(
+            true
+          );
+
+          setBaseMap(
+            "satellite"
+          );
+        } catch (
+          error
+        ) {
+          console.warn(
+            "Satellite imagery unavailable.",
+            error
+          );
+
+          setSatelliteAvailable(
+            false
+          );
+
+          setBaseMap(
+            "osm"
+          );
+        }
+      }
+
+      /*
+       * Navigation controls.
+       */
 
       const controller =
         viewer.scene
@@ -277,10 +636,6 @@ export default function CesiumMap({
       controller.enableInputs =
         true;
 
-      /* ------------------------------------------------------
-         Globe
-      ------------------------------------------------------ */
-
       viewer.scene.globe.show =
         true;
 
@@ -291,12 +646,9 @@ export default function CesiumMap({
         true;
 
       /*
-       * NORMAL STATE:
-       * top-down world map.
-       *
-       * It should feel like a standard map,
-       * not like an uncontrolled 3D globe.
+       * Initial world camera.
        */
+
       viewer.camera.setView({
         destination:
           Cesium.Cartesian3.fromDegrees(
@@ -319,15 +671,14 @@ export default function CesiumMap({
         },
       });
 
-      if (
-        !viewer.isDestroyed()
-      ) {
-        viewer.resize();
-        viewer.scene.requestRender();
-      }
+      viewer.resize();
+
+      viewer.scene.requestRender();
 
       if (!cancelled) {
-        setViewerReady(true);
+        setViewerReady(
+          true
+        );
       }
     }
 
@@ -357,15 +708,19 @@ export default function CesiumMap({
       viewerRef.current =
         null;
 
-      setViewerReady(
-        false
-      );
+      osmLayerRef.current =
+        null;
+
+      satelliteLayerRef.current =
+        null;
     };
   }, []);
 
-  /* ==========================================================
-     RESIZE
-  ========================================================== */
+  /*
+   * ============================================================
+   * RESIZE
+   * ============================================================
+   */
 
   useEffect(() => {
     const element =
@@ -401,9 +756,67 @@ export default function CesiumMap({
     };
   }, []);
 
-  /* ==========================================================
-     SEARCH LOCATION
-  ========================================================== */
+  /*
+   * ============================================================
+   * BASEMAP SWITCHING
+   * ============================================================
+   */
+
+  useEffect(() => {
+    if (!viewerReady) {
+      return;
+    }
+
+    const satellite =
+      satelliteLayerRef.current;
+
+    const osm =
+      osmLayerRef.current;
+
+    if (
+      baseMap ===
+      "satellite"
+    ) {
+      if (satellite) {
+        satellite.show =
+          true;
+      }
+
+      if (osm) {
+        osm.show =
+          false;
+      }
+    } else {
+      if (satellite) {
+        satellite.show =
+          false;
+      }
+
+      if (osm) {
+        osm.show =
+          true;
+      }
+    }
+
+    const viewer =
+      viewerRef.current;
+
+    if (
+      viewer &&
+      !viewer.isDestroyed()
+    ) {
+      viewer.scene.requestRender();
+    }
+  }, [
+    baseMap,
+    viewerReady,
+  ]);
+
+  /*
+   * ============================================================
+   * SEARCH LOCATION
+   * ============================================================
+   */
 
   useEffect(() => {
     if (
@@ -413,11 +826,11 @@ export default function CesiumMap({
       return;
     }
 
-    const requestId =
-      ++locationRequestRef.current;
-
     const currentLocation =
       location;
+
+    const requestId =
+      ++locationRequestRef.current;
 
     async function moveToLocation() {
       const viewer =
@@ -431,7 +844,9 @@ export default function CesiumMap({
       }
 
       const Cesium =
-        await import("cesium");
+        await import(
+          "cesium"
+        );
 
       if (
         requestId !==
@@ -461,9 +876,6 @@ export default function CesiumMap({
         return;
       }
 
-      /*
-       * Remove previous marker.
-       */
       const oldMarker =
         viewer.entities.getById(
           "search-location"
@@ -475,9 +887,6 @@ export default function CesiumMap({
         );
       }
 
-      /*
-       * EXACT search point.
-       */
       viewer.entities.add({
         id:
           "search-location",
@@ -508,61 +917,20 @@ export default function CesiumMap({
             3,
 
           heightReference:
-            Cesium.HeightReference.CLAMP_TO_GROUND,
-
-          disableDepthTestDistance:
-            Number.POSITIVE_INFINITY,
-        },
-
-        label: {
-          text:
-            "Searched location",
-
-          font:
-            "12px sans-serif",
-
-          fillColor:
-            Cesium.Color.WHITE,
-
-          showBackground:
-            true,
-
-          backgroundColor:
-            Cesium.Color.fromCssColorString(
-              "#07111f"
-            ).withAlpha(
-              0.88
-            ),
-
-          backgroundPadding:
-            new Cesium.Cartesian2(
-              8,
-              5
-            ),
-
-          pixelOffset:
-            new Cesium.Cartesian2(
-              0,
-              -24
-            ),
+            Cesium.HeightReference
+              .CLAMP_TO_GROUND,
 
           disableDepthTestDistance:
             Number.POSITIVE_INFINITY,
         },
       });
 
-      /*
-       * EXACT center.
-       *
-       * Top-down camera removes the visual offset that
-       * occurred with the previous oblique pitch.
-       */
       viewer.camera.flyTo({
         destination:
           Cesium.Cartesian3.fromDegrees(
             longitude,
             latitude,
-            9000
+            10000
           ),
 
         orientation: {
@@ -579,16 +947,7 @@ export default function CesiumMap({
         },
 
         duration:
-          1.1,
-
-        complete:
-          () => {
-            if (
-              !viewer.isDestroyed()
-            ) {
-              viewer.scene.requestRender();
-            }
-          },
+          1,
       });
 
       setViewState(
@@ -597,34 +956,25 @@ export default function CesiumMap({
     }
 
     moveToLocation().catch(
-      (error) => {
-        console.error(
-          "Location camera movement failed:",
-          error
-        );
-      }
+      console.error
     );
   }, [
     location,
     viewerReady,
   ]);
 
-  /* ==========================================================
-     DRAW ALL AVAILABLE TRAILS
-     
-     These are the trails around the searched location,
-     not fake routes and not selected-trail replacements.
-  ========================================================== */
+  /*
+   * ============================================================
+   * OTHER TRAILS
+   * ============================================================
+   */
 
   useEffect(() => {
     if (!viewerReady) {
       return;
     }
 
-    const requestId =
-      ++trailRequestRef.current;
-
-    async function drawMapTrails() {
+    async function drawOtherTrails() {
       const viewer =
         viewerRef.current;
 
@@ -636,123 +986,63 @@ export default function CesiumMap({
       }
 
       const Cesium =
-        await import("cesium");
-
-      /*
-       * Remove previous discovery geometry.
-       */
-      viewer.entities.values
-        .slice()
-        .forEach(
-          (entity: any) => {
-            if (
-              typeof entity.id ===
-                "string" &&
-              entity.id.startsWith(
-                "discovered-trail-"
-              )
-            ) {
-              viewer.entities.remove(
-                entity
-              );
-            }
-          }
+        await import(
+          "cesium"
         );
 
-      if (
-        mapTrails.length ===
-        0
-      ) {
-        viewer.scene.requestRender();
-        return;
-      }
+      removeEntitiesByPrefix(
+        "discovered-trail-"
+      );
 
-      /*
-       * Draw lightweight,
-       * non-selected trail lines.
-       */
       mapTrails.forEach(
         (
           trail,
           trailIndex
         ) => {
-          if (
-            !trail.geometry
-          ) {
+          const selected =
+            selectedTrail !==
+              null &&
+            selectedTrail.osm_id ===
+              trail.osm_id &&
+            selectedTrail.osm_type ===
+              trail.osm_type;
+
+          if (selected) {
             return;
           }
 
-          let segments:
-            number[][][] = [];
-
-          if (
-            trail.geometry.type ===
-            "LineString"
-          ) {
-            segments = [
-              trail.geometry.coordinates as number[][],
-            ];
-          } else if (
-            trail.geometry.type ===
-            "MultiLineString"
-          ) {
-            segments =
-              trail.geometry.coordinates as number[][][];
-          }
+          const segments =
+            geometryToSegments(
+              trail.geometry
+            );
 
           segments.forEach(
             (
               segment,
               segmentIndex
             ) => {
-              const positions =
-                segment
-                  .filter(
-                    (
-                      coordinate
-                    ) =>
-                      coordinate &&
-                      coordinate.length >=
-                        2 &&
-                      Number.isFinite(
-                        Number(
-                          coordinate[0]
-                        )
-                      ) &&
-                      Number.isFinite(
-                        Number(
-                          coordinate[1]
-                        )
-                      )
-                  )
-                  .map(
-                    (
-                      coordinate
-                    ) =>
-                      Cesium.Cartesian3.fromDegrees(
-                        Number(
-                          coordinate[0]
-                        ),
-                        Number(
-                          coordinate[1]
-                        ),
-                        0
-                      )
-                  );
-
               if (
-                positions.length <
+                segment.length <
                 2
               ) {
                 return;
               }
 
+              const positions =
+                segment.map(
+                  (
+                    coordinate
+                  ) =>
+                    Cesium.Cartesian3.fromDegrees(
+                      coordinate[0],
+                      coordinate[1],
+                      0
+                    )
+                );
+
               viewer.entities.add({
                 id:
                   `discovered-trail-${trail.osm_type}-${trail.osm_id}-${trailIndex}-${segmentIndex}`,
-
-                name:
-                  "Available trail",
 
                 polyline: {
                   positions,
@@ -765,9 +1055,11 @@ export default function CesiumMap({
 
                   material:
                     Cesium.Color.fromCssColorString(
-                      "#e8eef3"
+                      OTHER_TRAIL
                     ).withAlpha(
-                      0.82
+                      selectedTrail
+                        ? 0.35
+                        : 0.65
                     ),
                 },
               });
@@ -777,39 +1069,27 @@ export default function CesiumMap({
       );
 
       viewer.scene.requestRender();
-
-      if (
-        requestId !==
-        trailRequestRef.current
-      ) {
-        return;
-      }
     }
 
-    drawMapTrails().catch(
-      (error) => {
-        console.error(
-          "Trail map rendering failed:",
-          error
-        );
-      }
+    drawOtherTrails().catch(
+      console.error
     );
   }, [
     mapTrails,
+    selectedTrail,
     viewerReady,
   ]);
 
-  /* ==========================================================
-     SELECTED TRAIL
-  ========================================================== */
+  /*
+   * ============================================================
+   * SELECTED TRAIL
+   * ============================================================
+   */
 
   useEffect(() => {
     if (!viewerReady) {
       return;
     }
-
-    const requestId =
-      ++trailRequestRef.current;
 
     async function drawSelectedTrail() {
       const viewer =
@@ -823,28 +1103,13 @@ export default function CesiumMap({
       }
 
       const Cesium =
-        await import("cesium");
-
-      /*
-       * Remove old selected geometry.
-       */
-      viewer.entities.values
-        .slice()
-        .forEach(
-          (entity: any) => {
-            if (
-              typeof entity.id ===
-                "string" &&
-              entity.id.startsWith(
-                "selected-trail-"
-              )
-            ) {
-              viewer.entities.remove(
-                entity
-              );
-            }
-          }
+        await import(
+          "cesium"
         );
+
+      removeEntitiesByPrefix(
+        "selected-trail-"
+      );
 
       if (
         !selectedTrail
@@ -853,33 +1118,27 @@ export default function CesiumMap({
         return;
       }
 
+      const segments =
+        geometryToSegments(
+          selectedTrail.geometry
+        );
+
       if (
-        requestId !==
-        trailRequestRef.current
+        segments.length ===
+        0
       ) {
         return;
       }
 
-      let segments:
-        number[][][] = [];
+      /*
+       * Draw route.
+       */
 
-      if (
-        selectedTrail.geometry.type ===
-        "LineString"
-      ) {
-        segments = [
-          selectedTrail.geometry.coordinates as number[][],
-        ];
-      } else if (
-        selectedTrail.geometry.type ===
-        "MultiLineString"
-      ) {
-        segments =
-          selectedTrail.geometry.coordinates as number[][][];
-      }
+      const allPositions: any[] =
+        [];
 
-      const allPositions:
-        any[] = [];
+      const allCoordinates:
+        Coordinate[] = [];
 
       segments.forEach(
         (
@@ -887,127 +1146,371 @@ export default function CesiumMap({
           segmentIndex
         ) => {
           const positions =
-            segment
-              .filter(
-                (
-                  coordinate
-                ) =>
-                  coordinate &&
-                  coordinate.length >=
-                    2 &&
-                  Number.isFinite(
-                    Number(
-                      coordinate[0]
-                    )
-                  ) &&
-                  Number.isFinite(
-                    Number(
-                      coordinate[1]
-                    )
-                  )
-              )
-              .map(
-                (
-                  coordinate
-                ) =>
-                  Cesium.Cartesian3.fromDegrees(
-                    Number(
-                      coordinate[0]
-                    ),
-                    Number(
-                      coordinate[1]
-                    ),
-                    0
-                  )
-              );
-
-          if (
-            positions.length <
-            2
-          ) {
-            return;
-          }
+            segment.map(
+              (
+                coordinate
+              ) =>
+                Cesium.Cartesian3.fromDegrees(
+                  coordinate[0],
+                  coordinate[1],
+                  0
+                )
+            );
 
           allPositions.push(
             ...positions
           );
 
+          allCoordinates.push(
+            ...segment
+          );
+
+          /*
+           * Casing.
+           */
+
           viewer.entities.add({
             id:
-              `selected-trail-${segmentIndex}`,
+              `selected-trail-casing-${segmentIndex}`,
 
             name:
-              selectedTrail.name ??
               "Selected trail",
 
             polyline: {
               positions,
 
               width:
-                expanded
-                  ? 8
-                  : 7,
+                8,
 
               clampToGround:
                 true,
 
               material:
-                new Cesium.PolylineGlowMaterialProperty(
-                  {
-                    glowPower:
-                      0.16,
+                Cesium.Color.fromCssColorString(
+                  TRAIL_CASING
+                ).withAlpha(
+                  0.88
+                ),
+            },
+          });
 
-                    color:
-                      Cesium.Color.fromCssColorString(
-                        "#ff9f43"
-                      ),
-                  }
+          /*
+           * Bright green route.
+           */
+
+          viewer.entities.add({
+            id:
+              `selected-trail-route-${segmentIndex}`,
+
+            name:
+              "Selected trail",
+
+            polyline: {
+              positions,
+
+              width:
+                5,
+
+              clampToGround:
+                true,
+
+              material:
+                Cesium.Color.fromCssColorString(
+                  TRAIL_GREEN
                 ),
             },
           });
         }
       );
 
+      /*
+       * ========================================================
+       * START / END
+       * ========================================================
+       *
+       * IMPORTANT:
+       *
+       * Use the backend's explicit endpoint coordinates.
+       *
+       * Do not derive them from arbitrary MultiLineString
+       * ordering.
+       */
+
+      const backendStart =
+        selectedTrail.start_coordinate;
+
+      const backendEnd =
+        selectedTrail.end_coordinate;
+
       if (
-        allPositions.length <
-        2
+        selectedTrail.endpoint_available &&
+        backendStart &&
+        backendEnd
       ) {
+        /*
+         * Green start.
+         */
+
+        viewer.entities.add({
+          id:
+            "selected-trail-start",
+
+          name:
+            "Trail start",
+
+          position:
+            Cesium.Cartesian3.fromDegrees(
+              backendStart[0],
+              backendStart[1],
+              0
+            ),
+
+          point: {
+            pixelSize:
+              14,
+
+            color:
+              Cesium.Color.fromCssColorString(
+                START_GREEN
+              ),
+
+            heightReference:
+              Cesium.HeightReference
+                .CLAMP_TO_GROUND,
+
+            disableDepthTestDistance:
+              Number.POSITIVE_INFINITY,
+          },
+        });
+
+        /*
+         * Red end.
+         */
+
+        viewer.entities.add({
+          id:
+            "selected-trail-end",
+
+          name:
+            "Trail end",
+
+          position:
+            Cesium.Cartesian3.fromDegrees(
+              backendEnd[0],
+              backendEnd[1],
+              0
+            ),
+
+          point: {
+            pixelSize:
+              14,
+
+            color:
+              Cesium.Color.fromCssColorString(
+                END_RED
+              ),
+
+            heightReference:
+              Cesium.HeightReference
+                .CLAMP_TO_GROUND,
+
+            disableDepthTestDistance:
+              Number.POSITIVE_INFINITY,
+          },
+        });
+      }
+
+      /*
+       * ========================================================
+       * CAMERA BOUNDS
+       * ========================================================
+       */
+
+      const bounds =
+        calculateRouteBounds(
+          allCoordinates
+        );
+
+      if (!bounds) {
         return;
       }
 
       /*
-       * Camera now follows the ACTUAL selected trail.
+       * ========================================================
+       * 2D CAMERA
+       * ========================================================
        */
-      const boundingSphere =
-        Cesium.BoundingSphere.fromPoints(
-          allPositions
-        );
 
-      const range =
-        Math.max(
-          boundingSphere.radius *
-            2.4,
-          1000
-        );
+      if (
+        viewState ===
+        "map"
+      ) {
+        const canvas =
+          viewer.canvas;
 
-      viewer.camera.flyToBoundingSphere(
-        boundingSphere,
-        {
-          duration:
-            1.4,
+        const viewportWidth =
+          Math.max(
+            canvas.clientWidth,
+            1
+          );
 
-          offset:
-            new Cesium.HeadingPitchRange(
+        const viewportHeight =
+          Math.max(
+            canvas.clientHeight,
+            1
+          );
+
+        const aspect =
+          viewportWidth /
+          viewportHeight;
+
+        const latitudeRadians =
+          bounds.centerLatitude *
+          (
+            Math.PI /
+            180
+          );
+
+        const metersPerDegreeLatitude =
+          111320;
+
+        const metersPerDegreeLongitude =
+          111320 *
+          Math.max(
+            Math.cos(
+              latitudeRadians
+            ),
+            0.01
+          );
+
+        const longitudeSpan =
+          Math.max(
+            bounds.east -
+              bounds.west,
+            0.0005
+          );
+
+        const latitudeSpan =
+          Math.max(
+            bounds.north -
+              bounds.south,
+            0.0005
+          );
+
+        const routeWidthMeters =
+          longitudeSpan *
+          metersPerDegreeLongitude;
+
+        const routeHeightMeters =
+          latitudeSpan *
+          metersPerDegreeLatitude;
+
+        const requiredGroundExtent =
+          Math.max(
+            routeHeightMeters,
+            routeWidthMeters /
+              Math.max(
+                aspect,
+                0.5
+              )
+          );
+
+        /*
+         * Comfortable but not excessive.
+         */
+
+        const cameraHeight =
+          Math.max(
+            requiredGroundExtent *
+              1.45,
+            4500
+          );
+
+        viewer.camera.flyTo({
+          destination:
+            Cesium.Cartesian3.fromDegrees(
+              bounds.centerLongitude,
+              bounds.centerLatitude,
+              cameraHeight
+            ),
+
+          orientation: {
+            heading:
               0,
 
+            pitch:
               Cesium.Math.toRadians(
-                -48
+                -90
               ),
 
-              range
-            ),
-        }
-      );
+            roll:
+              0,
+          },
+
+          duration:
+            1,
+        });
+      } else {
+        /*
+         * ======================================================
+         * 3D CAMERA
+         * ======================================================
+         *
+         * Do NOT use Cesium automatic range here.
+         *
+         * Calculate a controlled route-relative distance.
+         */
+
+        const routeSphere =
+          Cesium.BoundingSphere.fromPoints(
+            allPositions
+          );
+
+        /*
+         * Route radius.
+         */
+
+        const radius =
+          Math.max(
+            routeSphere.radius,
+            1200
+          );
+
+        /*
+         * Controlled distance.
+         *
+         * This is deliberately conservative:
+         *
+         * not the old close-up,
+         * not the previous excessive distant view.
+         */
+
+        const range =
+          Math.max(
+            radius *
+              2.35,
+            4500
+          );
+
+        viewer.camera.flyToBoundingSphere(
+          routeSphere,
+          {
+            duration:
+              1.15,
+
+            offset:
+              new Cesium.HeadingPitchRange(
+                0,
+
+                Cesium.Math.toRadians(
+                  -58
+                ),
+
+                range
+              ),
+          }
+        );
+      }
 
       viewer.scene.requestRender();
     }
@@ -1024,27 +1527,35 @@ export default function CesiumMap({
     selectedTrail,
     viewerReady,
     expanded,
+    viewState,
   ]);
 
-  /* ==========================================================
-     NORMAL MAP CONTROLS
-  ========================================================== */
+  /*
+   * ============================================================
+   * ZOOM
+   * ============================================================
+   */
 
   async function zoomIn() {
     const viewer =
       viewerRef.current;
 
-    if (!viewer) {
+    if (
+      !viewer ||
+      viewer.isDestroyed()
+    ) {
       return;
     }
 
-    const Cesium =
-      await import("cesium");
+    const height =
+      viewer.camera
+        .positionCartographic
+        .height;
 
     viewer.camera.zoomIn(
       Math.max(
-        viewer.camera.positionCartographic.height *
-          0.35,
+        height *
+          0.25,
         100
       )
     );
@@ -1056,17 +1567,22 @@ export default function CesiumMap({
     const viewer =
       viewerRef.current;
 
-    if (!viewer) {
+    if (
+      !viewer ||
+      viewer.isDestroyed()
+    ) {
       return;
     }
 
-    const Cesium =
-      await import("cesium");
+    const height =
+      viewer.camera
+        .positionCartographic
+        .height;
 
     viewer.camera.zoomOut(
       Math.max(
-        viewer.camera.positionCartographic.height *
-          0.35,
+        height *
+          0.25,
         100
       )
     );
@@ -1074,16 +1590,22 @@ export default function CesiumMap({
     viewer.scene.requestRender();
   }
 
+  /*
+   * ============================================================
+   * NORTH
+   * ============================================================
+   */
+
   async function resetNorth() {
     const viewer =
       viewerRef.current;
 
-    if (!viewer) {
+    if (
+      !viewer ||
+      viewer.isDestroyed()
+    ) {
       return;
     }
-
-    const Cesium =
-      await import("cesium");
 
     viewer.camera.setView({
       orientation: {
@@ -1101,6 +1623,12 @@ export default function CesiumMap({
     viewer.scene.requestRender();
   }
 
+  /*
+   * ============================================================
+   * CENTER
+   * ============================================================
+   */
+
   async function centerLocation() {
     const currentLocation =
       location;
@@ -1112,12 +1640,21 @@ export default function CesiumMap({
     const viewer =
       viewerRef.current;
 
-    if (!viewer) {
+    if (
+      !viewer ||
+      viewer.isDestroyed()
+    ) {
+      return;
+    }
+
+    if (selectedTrail) {
       return;
     }
 
     const Cesium =
-      await import("cesium");
+      await import(
+        "cesium"
+      );
 
     viewer.camera.flyTo({
       destination:
@@ -1138,7 +1675,7 @@ export default function CesiumMap({
           viewState ===
           "terrain"
             ? Cesium.Math.toRadians(
-                -58
+                -50
               )
             : Cesium.Math.toRadians(
                 -90
@@ -1153,20 +1690,22 @@ export default function CesiumMap({
     });
   }
 
-  /* ==========================================================
-     TRUE 3D TERRAIN
-  ========================================================== */
+  /*
+   * ============================================================
+   * 3D TERRAIN TOGGLE
+   * ============================================================
+   */
 
   async function toggle3DTerrain() {
     const viewer =
       viewerRef.current;
 
-    if (!viewer) {
+    if (
+      !viewer ||
+      viewer.isDestroyed()
+    ) {
       return;
     }
-
-    const currentLocation =
-      location;
 
     const token =
       process.env
@@ -1181,7 +1720,9 @@ export default function CesiumMap({
     }
 
     const Cesium =
-      await import("cesium");
+      await import(
+        "cesium"
+      );
 
     if (
       viewState ===
@@ -1204,7 +1745,13 @@ export default function CesiumMap({
           "terrain"
         );
 
-        if (currentLocation) {
+        const currentLocation =
+          location;
+
+        if (
+          !selectedTrail &&
+          currentLocation
+        ) {
           viewer.camera.flyTo({
             destination:
               Cesium.Cartesian3.fromDegrees(
@@ -1219,7 +1766,7 @@ export default function CesiumMap({
 
               pitch:
                 Cesium.Math.toRadians(
-                  -58
+                  -50
                 ),
 
               roll:
@@ -1227,73 +1774,78 @@ export default function CesiumMap({
             },
 
             duration:
-              0.9,
+              0.8,
           });
         }
-      } catch (error) {
+      } catch (
+        error
+      ) {
         console.error(
           "3D terrain activation failed:",
           error
         );
       }
     } else {
-      /*
-       * Return to the map-like top-down view.
-       */
-      viewer.camera.flyTo({
-        destination:
-          currentLocation
-            ? Cesium.Cartesian3.fromDegrees(
-                currentLocation.longitude,
-                currentLocation.latitude,
-                9000
-              )
-            : Cesium.Cartesian3.fromDegrees(
-                0,
-                20,
-                18000000
-              ),
-
-        orientation: {
-          heading:
-            0,
-
-          pitch:
-            Cesium.Math.toRadians(
-              -90
-            ),
-
-          roll:
-            0,
-        },
-
-        duration:
-          0.8,
-      });
-
       setViewState(
         "map"
       );
+
+      const currentLocation =
+        location;
+
+      if (
+        !selectedTrail &&
+        currentLocation
+      ) {
+        viewer.camera.flyTo({
+          destination:
+            Cesium.Cartesian3.fromDegrees(
+              currentLocation.longitude,
+              currentLocation.latitude,
+              9000
+            ),
+
+          orientation: {
+            heading:
+              0,
+
+            pitch:
+              Cesium.Math.toRadians(
+                -90
+              ),
+
+            roll:
+              0,
+          },
+
+          duration:
+            0.8,
+        });
+      }
     }
 
     viewer.scene.requestRender();
   }
+
+  /*
+   * ============================================================
+   * UI
+   * ============================================================
+   */
 
   return (
     <div
       ref={containerRef}
       className="absolute inset-0 h-full w-full overflow-hidden bg-[#d8dde2]"
     >
-      {/* ======================================================
-          MAP BUTTONS
-      ====================================================== */}
-
       <div className="absolute right-4 top-4 z-50 flex gap-2">
         <button
           type="button"
           onClick={() =>
             setLayersOpen(
-              (open) => !open
+              (
+                open
+              ) => !open
             )
           }
           className="rounded-xl border border-white/20 bg-[#07111f]/90 px-4 py-2.5 text-xs font-medium text-white shadow-xl backdrop-blur-xl transition hover:bg-[#0b1929]"
@@ -1310,7 +1862,7 @@ export default function CesiumMap({
             "rounded-xl border px-4 py-2.5 text-xs font-semibold shadow-xl backdrop-blur-xl transition",
             viewState ===
             "terrain"
-              ? "border-[#ff9f43]/50 bg-[#ff9f43]/15 text-[#ffd3a8]"
+              ? "border-[#63E96B]/50 bg-[#63E96B]/15 text-[#e4ffe0]"
               : "border-white/20 bg-[#07111f]/90 text-white hover:bg-[#0b1929]",
           ].join(" ")}
         >
@@ -1321,75 +1873,77 @@ export default function CesiumMap({
         </button>
       </div>
 
-      {/* ======================================================
-          LAYERS
-      ====================================================== */}
-
       {layersOpen && (
-        <div className="absolute right-4 top-[64px] z-50 w-[280px] rounded-2xl border border-white/10 bg-[#07111f]/95 p-4 shadow-2xl backdrop-blur-xl">
+        <div className="absolute right-4 top-[64px] z-50 w-[290px] rounded-2xl border border-white/10 bg-[#07111f]/95 p-4 shadow-2xl backdrop-blur-xl">
           <p className="text-[10px] font-medium uppercase tracking-[0.2em] text-white/40">
             Map layers
           </p>
 
           <div className="mt-4 space-y-2">
-            <div className="flex items-center justify-between rounded-xl bg-white/[0.05] px-3 py-3">
-              <span className="text-xs text-white/80">
+            <button
+              type="button"
+              disabled={
+                !satelliteAvailable
+              }
+              onClick={() =>
+                setBaseMap(
+                  "satellite"
+                )
+              }
+              className={[
+                "flex w-full items-center justify-between rounded-xl px-3 py-3 text-left transition",
+                baseMap ===
+                "satellite"
+                  ? "bg-white/[0.10]"
+                  : "bg-white/[0.04] hover:bg-white/[0.07]",
+                !satelliteAvailable
+                  ? "cursor-not-allowed opacity-40"
+                  : "",
+              ].join(" ")}
+            >
+              <span className="text-xs text-white/85">
+                Satellite
+              </span>
+
+              <span className="text-[9px] uppercase tracking-[0.12em] text-white/35">
+                {satelliteAvailable
+                  ? baseMap ===
+                    "satellite"
+                    ? "Active"
+                    : "Available"
+                  : "Unavailable"}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() =>
+                setBaseMap(
+                  "osm"
+                )
+              }
+              className={[
+                "flex w-full items-center justify-between rounded-xl px-3 py-3 text-left transition",
+                baseMap ===
+                "osm"
+                  ? "bg-white/[0.10]"
+                  : "bg-white/[0.04] hover:bg-white/[0.07]",
+              ].join(" ")}
+            >
+              <span className="text-xs text-white/85">
                 OpenStreetMap
               </span>
 
-              <span className="text-[9px] uppercase tracking-[0.12em] text-white/30">
-                Base
-              </span>
-            </div>
-
-            <div className="flex items-center justify-between rounded-xl bg-white/[0.05] px-3 py-3">
-              <span className="text-xs text-white/80">
-                Searched location
-              </span>
-
-              <span className="text-[9px] uppercase tracking-[0.12em] text-white/30">
-                {location
+              <span className="text-[9px] uppercase tracking-[0.12em] text-white/35">
+                {baseMap ===
+                "osm"
                   ? "Active"
-                  : "None"}
+                  : "Available"}
               </span>
-            </div>
-
-            <div className="flex items-center justify-between rounded-xl bg-white/[0.05] px-3 py-3">
-              <span className="text-xs text-white/80">
-                Available trails
-              </span>
-
-              <span className="text-[9px] uppercase tracking-[0.12em] text-white/30">
-                {mapTrails.length}
-              </span>
-            </div>
-
-            <div className="flex items-center justify-between rounded-xl bg-white/[0.05] px-3 py-3">
-              <span className="text-xs text-white/80">
-                Selected trail
-              </span>
-
-              <span className="text-[9px] uppercase tracking-[0.12em] text-white/30">
-                {selectedTrail
-                  ? "Active"
-                  : "None"}
-              </span>
-            </div>
-
-            <div className="rounded-xl bg-white/[0.035] px-3 py-3">
-              <p className="text-[10px] leading-4 text-white/35">
-                Terrain and environmental layers will be
-                added here as the intelligence pipeline is
-                integrated.
-              </p>
-            </div>
+            </button>
           </div>
         </div>
       )}
-
-      {/* ======================================================
-          MAP NAVIGATION
-      ====================================================== */}
 
       <div className="absolute bottom-4 left-4 z-50 flex flex-col overflow-hidden rounded-2xl border border-white/15 bg-[#07111f]/90 shadow-2xl backdrop-blur-xl">
         <button
@@ -1430,16 +1984,12 @@ export default function CesiumMap({
           onClick={
             centerLocation
           }
-          aria-label="Center searched location"
+          aria-label="Center map"
           className="flex h-10 w-10 items-center justify-center text-lg text-white/70 transition hover:bg-white/10"
         >
           ◎
         </button>
       </div>
-
-      {/* ======================================================
-          EXPAND / CLOSE
-      ====================================================== */}
 
       {!expanded &&
         onExpand && (
@@ -1466,10 +2016,6 @@ export default function CesiumMap({
             Close
           </button>
         )}
-
-      {/* ======================================================
-          ATTRIBUTION
-      ====================================================== */}
 
       <div className="absolute bottom-1 right-1 z-40 rounded bg-white/80 px-2 py-1 text-[9px] text-black/60 backdrop-blur-sm">
         © OpenStreetMap contributors

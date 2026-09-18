@@ -5,6 +5,9 @@ from app.core.init_db import init_db
 from app.routes.trails import router as trails_router
 from app.routes.osm import router as osm_router
 from app.routes.search import router as search_router
+from app.routes.weather import router as weather_router
+from app.routes.elevation import router as elevation_router
+
 
 
 app = FastAPI(
@@ -31,7 +34,8 @@ app.add_middleware(
 app.include_router(trails_router)
 app.include_router(osm_router)
 app.include_router(search_router)
-
+app.include_router(weather_router)
+app.include_router(elevation_router)
 
 @app.on_event("startup")
 def on_startup():
