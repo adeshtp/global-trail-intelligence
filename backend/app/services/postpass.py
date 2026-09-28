@@ -813,6 +813,15 @@ def _relation_from_row(
         "official_name",
         "loc_name",
         "short_name",
+        # A former name is real OpenStreetMap evidence about this exact
+        # feature, so a trail renamed upstream is still findable by the name
+        # people actually know. It is deliberately never a fallback for the
+        # primary `name`: that would relabel a route with a name it no
+        # longer has.
+        "old_name",
+        # `alt_name` carries every semicolon-separated variant on a single
+        # tag, so it arrives as one string. Preserved as-is below rather
+        # than truncated, because a multi-name tag is still real evidence.
     ):
         value = str(
             row.get(
@@ -1140,6 +1149,7 @@ SELECT
     r.tags->>'official_name' AS official_name,
     r.tags->>'loc_name' AS loc_name,
     r.tags->>'short_name' AS short_name,
+    r.tags->>'old_name' AS old_name,
     r.tags->>'name:en' AS name_en,
     r.tags->>'int_name' AS int_name,
     ST_GeometryType(l.geom) AS geometry_type,
@@ -1283,6 +1293,7 @@ def _way_from_row(
         "official_name",
         "loc_name",
         "short_name",
+        "old_name",
     ):
         value = str(row.get(key) or "").strip()
 
@@ -1388,6 +1399,7 @@ SELECT
     l.tags->>'official_name' AS official_name,
     l.tags->>'loc_name' AS loc_name,
     l.tags->>'short_name' AS short_name,
+    l.tags->>'old_name' AS old_name,
     l.tags->>'route' AS route,
     l.tags->>'highway' AS highway,
     l.tags->>'sac_scale' AS sac_scale,
@@ -1663,6 +1675,7 @@ SELECT
     r.tags->>'official_name' AS official_name,
     r.tags->>'loc_name' AS loc_name,
     r.tags->>'short_name' AS short_name,
+    r.tags->>'old_name' AS old_name,
     r.tags->>'name:en' AS name_en,
     r.tags->>'int_name' AS int_name,
     ST_GeometryType(l.geom) AS geometry_type,
@@ -1956,6 +1969,7 @@ SELECT
     r.tags->>'official_name' AS official_name,
     r.tags->>'loc_name' AS loc_name,
     r.tags->>'short_name' AS short_name,
+    r.tags->>'old_name' AS old_name,
     ST_GeometryType(l.geom) AS geometry_type,
     ST_NPoints(l.geom) AS point_count,
     ROUND(
@@ -2058,6 +2072,7 @@ SELECT
     l.tags->>'official_name' AS official_name,
     l.tags->>'loc_name' AS loc_name,
     l.tags->>'short_name' AS short_name,
+    l.tags->>'old_name' AS old_name,
     l.tags->>'route' AS route,
     l.tags->>'highway' AS highway,
     l.tags->>'sac_scale' AS sac_scale,

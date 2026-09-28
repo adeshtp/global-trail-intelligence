@@ -64,9 +64,49 @@ SEARCH_QUERIES_PER_PLACE = max(
         6,
     ),
 )
+# How many query formulations to try for one place. Two distinct phrasings
+# of the same intent return the same pages, which is what made a place search
+# appear to have no results: the budget was spent twice on one kind of page.
+# Three reaches the enumeration pages AND the named-route pages, which are
+# different pages with different trails in them.
+SEARCH_QUERY_FLOOR = max(
+    1,
+    min(int(os.getenv("SEARXNG_SEARCH_QUERY_FLOOR", "3")), 6),
+)
+# Applied to SEARCH_QUERIES_PER_PLACE below. Two distinct phrasings of the
+# same intent return the same pages, so a low configured value made a place
+# search look empty simply because the whole budget went to one kind of page.
+SEARCH_QUERIES_PER_PLACE = max(
+    SEARCH_QUERY_FLOOR,
+    SEARCH_QUERIES_PER_PLACE,
+)
+# Broader than the local radius. A hill station's associated destinations
+# (a ridge, a waterfall, a far trailhead) routinely sit outside a town-sized
+# circle even though they are what the place is known for, so a place search
+# is widened to this radius while an exact-trail search is not.
+PLACE_ASSOCIATION_RADIUS_M = max(
+    5000.0,
+    min(float(os.getenv("PLACE_ASSOCIATION_RADIUS_M", "40000.0")), 120000.0),
+)
+# How many characters of a result body to read when looking for names that
+# the title did not carry. An enumeration page lists its trails in the body,
+# and this is where those names are.
+SNIPPET_NAME_SCAN_CHARS = max(
+    700,
+    min(int(os.getenv("SNIPPET_NAME_SCAN_CHARS", "2500")), 6000),
+)
 SEARCH_RESULTS_PER_QUERY = max(
     5,
     min(int(os.getenv("SEARXNG_RESULTS_PER_QUERY", "12")), 20),
+)
+# A listicle result names its trails in the body, not the title. The previous
+# 700-character cap kept the lead paragraph and discarded every named
+# destination below it, so a page titled "Top 6 Trekking Trails in Munnar"
+# contributed nothing. 2500 characters is enough to cover the enumeration
+# such a page is actually for.
+SNIPPET_CHARS_PER_RESULT = max(
+    700,
+    min(int(os.getenv("SNIPPET_CHARS_PER_RESULT", "2500")), 6000),
 )
 SEMANTIC_CACHE_TTL_SECONDS = max(
     60.0,
@@ -622,12 +662,23 @@ def _search_queries(place: str) -> list[str]:
         return []
 
     quoted = f'"{place_key}"'
+
+    # Ordered by what each is good at finding, because this list is truncated
+    # to SEARCH_QUERIES_PER_PLACE and only the leading entries ever run. The
+    # previous ordering led with two near-identical generic phrasings, so the
+    # entire query budget went to one kind of page.
+    #
+    # The enumeration phrasings ("top N trails in X") are the highest-yield
+    # queries for a place search, because a single such page names many real
+    # trails in its body. They lead. The named-route phrasings follow, and
+    # they are what an exact-trail query needs, since they return a page per
+    # trail rather than a list of them.
     return [
         f"{quoted} hiking trails trekking routes",
+        f"{quoted} best trekking trails list",
+        f"{quoted} trekking route to trail",
         f"{quoted} trek trail peak waterfall",
-        f"{quoted} hiking route loop summit ridge",
-        f"{quoted} valley mountain walk nature trail",
-        f"{quoted} trekking circuit peak route",
+        f"{quoted} waterfall ridge valley trail",
         f"{quoted} lesser known trekking trails",
     ][:SEARCH_QUERIES_PER_PLACE]
 
@@ -779,8 +830,14 @@ def _build_gemini_input(
             " ",
             str(result.get("content") or "").strip(),
         )
-        if len(content) > 700:
-            content = content[:700] + "..."
+        # The snippet length was capped at 700 characters, which for a
+        # listicle result usually holds the lead paragraph and cuts off
+        # every named destination further down the page. The cap exists to
+        # bound prompt size, so it is raised rather than removed, and each
+        # result is additionally truncated only if it alone still exceeds
+        # the total budget.
+        if len(content) > SNIPPET_CHARS_PER_RESULT:
+            content = content[:SNIPPET_CHARS_PER_RESULT] + "..."
         rows.append(
             f"RESULT {index}\nTITLE: {title}\nURL: {url}\nSNIPPET: {content}"
         )
@@ -1014,6 +1071,144 @@ async def _run_gemini(
     return trails
 
 
+# Capitalised runs inside a result body. Web pages name real entities this
+# way, and it is the only way to recover a trail name that exists solely in
+# the body text.
+_CAPITALISED_RUN = re.compile(
+    r"\b([A-Z][A-Za-z'’-]+(?:\s+[A-Z][A-Za-z'’-]+){0,3})\b"
+)
+
+# Sentence-initial words that are capitalised for grammar, not because they
+# name something. Without this, "Explore", "Looking" and "Whether" are
+# extracted as trails.
+_SENTENCE_LEAD_STOPWORDS = frozenset(
+    {
+        "a", "after", "all", "an", "and", "are", "as", "at", "be", "before",
+        "best", "book", "but", "by", "check", "consider", "discover", "do",
+        "during", "each", "embark", "enjoy", "explore", "for", "from",
+        "get", "go", "going", "good", "great", "here", "how", "if", "in",
+        "is", "it", "its", "join", "journey", "just", "know", "looking",
+        "make", "many", "may", "more", "most", "much", "must", "need", "not",
+        "now", "of", "on", "one", "only", "or", "pack", "perfect", "plan",
+        "reach", "ready", "reaching", "read", "remember", "safety", "start",
+        "take", "the", "their", "there", "these", "this", "those",
+        "through", "to", "top", "try", "unlike", "until", "upon", "very",
+        "visit", "want", "what", "when", "where", "which", "while", "why",
+        "with", "you", "your",
+    }
+)
+
+# A name that is only ever a commercial brand, transport point or built
+# facility. "Shola Crown" is a trekking operator, not a trail; the word
+# "shola" in it is the forest type the company is named for. These are
+# recognised from the words a business or facility name is made of, not from
+# any particular operator or location.
+# Words that claim the name IS a route, rather than merely naming somewhere.
+# A settlement or facility word alongside one of these is a trail that passes
+# a landmark ("Top Station Sunrise Trek"); without one it is the facility.
+_ROUTE_IDENTITY_WORDS = frozenset(
+    {
+        "trail", "trails", "trek", "treks", "trekking", "hike", "hikes",
+        "hiking", "loop", "circuit", "route", "routes", "path", "paths",
+        "footpath", "walk", "walking", "track",
+    }
+)
+
+_NON_TRAIL_ENTITY_WORDS = frozenset(
+    {
+        "bus", "stand", "power", "house", "resort", "hotel", "homestay",
+        "lodge", "cottage", "villa", "centre", "center", "academy",
+        "hospital", "clinic", "temple", "church", "mosque", "dam", "tour",
+        "tours", "travel", "travels", "adventure", "adventures", "camp",
+        "camps", "camping", "package", "packages", "booking", "book",
+        "guide", "guides", "operator", "company", "holiday", "trips",
+        "trip", "crown", "palace", "estate", "tower", "market",
+        "junction", "corner", "office", "bank", "atm", "parking", "gate",
+        "entrance", "exit", "check", "post", "view", "roof", "bridge",
+        # Settlements and transport, not routes. A hill station, a tea
+        # estate and a village all sit inside a trekking area and are named
+        # constantly on the pages this reads.
+        "station", "village", "town", "city", "estate", "plantation",
+        "factory", "warehouse", "college", "school", "university",
+        "railway", "airport", "bridge", "causeway", "bungalow",
+    }
+)
+
+
+def _names_from_snippet(
+    snippet: str,
+    place: str,
+) -> list[str]:
+    """
+    Names of real entities stated inside a result body.
+
+    Search engines answer a regional query with enumeration pages whose
+    titles are editorial ("Top 6 Trekking Trails in Munnar"). Every named
+    trail those pages talk about is in the body, so reading only the title
+    loses the entire result. This reads the body for capitalised runs and
+    keeps the ones that survive the same candidate test used for titles.
+
+    The phrase must carry route or destination evidence of its own, or sit
+    immediately beside one in the text. That requirement is what separates
+    "Attukad Falls Loop" from "Backpack" or "Munnar Bus Stand", and it is why
+    the word "trail" appearing once anywhere on a large page does not make
+    every proper noun on it a candidate.
+    """
+    text = re.sub(r"\s+", " ", str(snippet or "")).strip()
+    if not text:
+        return []
+
+    bounded = text[:SNIPPET_NAME_SCAN_CHARS]
+    found: list[str] = []
+    seen: set[str] = set()
+
+    for match in _CAPITALISED_RUN.finditer(bounded):
+        phrase = match.group(1).strip()
+        tokens = _tokens(phrase)
+        if not tokens:
+            continue
+        # A single ordinary capitalised word carries no name evidence.
+        if len(phrase.split()) < 2:
+            continue
+        lowered = phrase.split()
+        if lowered[0].casefold() in _SENTENCE_LEAD_STOPWORDS:
+            continue
+
+        # The phrase must carry route or destination evidence in ITSELF.
+        # Requiring only a nearby occurrence was too weak: on an
+        # enumeration page, "trail" appears once and then every capitalised
+        # word for miles of text passes, which is how "Munnar Bus Stand"
+        # and "Power House" were being read as trails. A real trail name
+        # says what it is ("Attukad Falls Loop", "Kozhiparamba Footpath",
+        # "Chembra Peak"). A name that carries no route word at all is left
+        # to Gemini, whose instructions already allow a bare place name.
+        if not (tokens & TRAIL_WORDS):
+            continue
+
+        cleaned = _extract_entity_name(phrase)
+        key = _name_key(cleaned)
+        if not key or key in seen:
+            continue
+        if not _looks_like_candidate(cleaned, place):
+            continue
+        # A name built from facility, business or settlement words is not a
+        # route, even when it carries a route word because of where the
+        # facility is ("Munnar Hill Station") or what it sells ("Shola Crown
+        # Trails"). A genuine trail can legitimately mention a station or an
+        # estate ("Top Station Sunrise Trek"), so a settlement word only
+        # disqualifies when the name does not also claim to BE a route.
+        if _tokens(cleaned) & _NON_TRAIL_ENTITY_WORDS and not (
+            _tokens(cleaned) & _ROUTE_IDENTITY_WORDS
+        ):
+            continue
+        if EDITORIAL_NAME_PATTERN.search(cleaned):
+            continue
+        seen.add(key)
+        found.append(cleaned)
+
+    return found
+
+
 def _candidate_name_from_title(
     title: str,
     place: str | None = None,
@@ -1055,34 +1250,33 @@ def _deterministic_candidates(
 ) -> list[DiscoveredTrail]:
     """Conservative fallback when Gemini is unavailable.
 
-    It only extracts route-like titles and explicit OSM URLs. It remains
-    supplemental and is still verified by the Postpass pipeline.
+    Reads the title first, then the body. Reading only the title meant a
+    regional query returned almost nothing: the pages that actually
+    enumerate a region's trails are titled editorially ("Top 6 Trekking
+    Trails in Munnar") and keep every trail name in the body instead.
+
+    It remains supplemental: each candidate still has to survive the
+    candidate test, and is still verified against OSM by the Postpass
+    pipeline before anything is presented as mapped.
     """
     candidates: list[DiscoveredTrail] = []
     seen: set[str] = set()
 
-    for result in results:
-        title = str(result.get("title") or "").strip()
-        url = _canonical_url(result.get("url"))
-        name = _candidate_name_from_title(title, place)
-        reference = _extract_osm_reference(
-            url,
-            from_source_url=True,
-        )
-        if not name:
-            if reference is None:
-                continue
-            name = title
+    def _add(
+        name: str,
+        title: str,
+        url: str,
+        reference: OsmReference | None,
+    ) -> None:
+        key = _name_key(name)
+        if not key or key in seen:
+            return
         if not _looks_like_candidate(
             name,
             place,
             has_osm_reference=reference is not None,
         ):
-            continue
-
-        key = _name_key(name)
-        if not key or key in seen:
-            continue
+            return
         seen.add(key)
         candidates.append(
             DiscoveredTrail(
@@ -1098,6 +1292,30 @@ def _deterministic_candidates(
                 location_context=place,
             )
         )
+
+    for result in results:
+        title = str(result.get("title") or "").strip()
+        url = _canonical_url(result.get("url"))
+        reference = _extract_osm_reference(
+            url,
+            from_source_url=True,
+        )
+
+        name = _candidate_name_from_title(title, place)
+        if name:
+            _add(name, title, url, reference)
+        elif reference is not None:
+            # An OpenStreetMap URL is identity evidence in its own right, so
+            # such a result is not discarded merely because its title is
+            # editorial.
+            _add(title, title, url, reference)
+        else:
+            for body_name in _names_from_snippet(
+                str(result.get("content") or ""),
+                place,
+            ):
+                _add(body_name, title, url, None)
+
         if len(candidates) >= min(MAX_TRAIL_CANDIDATES, 20):
             break
 

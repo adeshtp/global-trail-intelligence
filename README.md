@@ -60,7 +60,7 @@ OpenStreetMap/Postpass query path, which is what makes a route mappable.
 | --- | --- | --- |
 | `POSTPASS_URL` | effectively yes | Discovery cannot verify any geometry, so results stay `UNMAPPED` |
 | `NEXT_PUBLIC_API_BASE_URL` | yes (frontend) | Frontend cannot reach the backend |
-| `GEMINI_API_KEY` | no | Assistant falls back to showing the retrieved evidence directly |
+| `GEMINI_API_KEY` | no | Assistant answers compose from the trail's own verified data; the Products and semantic layers fall back to conservative local extraction |
 | `TAVILY_API_KEY` | no | Product section offers real search links only |
 | `SEARXNG_URL` | no | Semantic enrichment is skipped; OSM discovery is unaffected |
 
@@ -112,6 +112,64 @@ reported as `strong` or `weak`:
 
 `weak` describes the strength of the *relevance evidence only*. Weak evidence
 is still MAP_READY, which means the geometry is real and verified.
+
+### Search scope and geographic radius
+
+The search radius follows what was asked, not one flat default. This is
+decided from the words in the user's query and the resolved place type — never
+from a list of known place or trail names.
+
+| What was searched | Radius | Source string |
+| --- | --- | --- |
+| A peak / summit (`place_kind=peak`) | 6 km | `peak_radius` |
+| An exact trail name (query carries a route word *and* a name) | 25 km | `local_radius` |
+| A place — town, hill station, district | 40 km | `place_association_radius` |
+| A broad area (`scope=area`) | 60 km | `area_radius` |
+| A client-supplied bbox | as requested | `requested_bbox` |
+
+The place radius is the one that mattered. It was previously a flat 25 km for
+every non-peak query, which quietly confined a hill-station search to a
+town-sized circle and excluded the very destinations the place is known for —
+Anamudi is about 41 km from Munnar's town centre. It is still a bounded circle
+around the resolved point (about 6,400 km², one tile), so a place search never
+becomes a country sweep, and a genuine region search passes a real bbox.
+
+Exact-trail detection deliberately reads the raw token set rather than the
+similarity token set, because the latter strips generic words like `footpath`,
+`trail` and `loop` — which made every trail-shaped query read as a bare place
+name.
+
+### Semantic discovery and recall
+
+Semantic discovery is supplemental. It can only ever *nominate* a trail; Postpass
+and OSM remain the authority for identity and geometry, and Gemini never creates
+geometry.
+
+Search engines answer a regional query with enumeration pages — *"Top 6
+Trekking Trails in Munnar"* — whose **titles are editorial** and which keep
+every trail name in the **body**. Reading only the title therefore returned
+almost nothing for a place search: 19 real results for Munnar produced 0
+candidates. Two changes fixed it:
+
+- Names are now also read from the result body. A phrase qualifies only if it
+  carries a route or destination word *in itself*; requiring merely a nearby
+  occurrence was too weak, because `trail` appears once on a long page and then
+  every capitalised word for miles of text passes. Settlement and business words
+  (`station`, `village`, `estate`) disqualify a name unless it also claims to be
+  a route, so `Top Station Sunrise Trek` survives and `Munnar Hill Station` does
+  not.
+- The query list no longer leads with two near-identical generic phrasings, and
+  the configured query count has a floor of three, because two phrasings of one
+  intent return the same pages.
+
+Snippets are passed to the model at 2500 characters rather than 700, because
+the shorter cap kept the lead paragraph of a listicle and discarded the
+enumeration itself.
+
+The same Munnar search now returns **37 trails (16 MAP_READY, 21 UNMAPPED)**
+against 10 before, and Wayanad **27 (12 / 15)** against 9, with `Chokramudi
+Trail`, `Lakshmi Hills`, `Meesapulimala`, `Kozhiparamba footpath`,
+`Chembra Peak`, `Banasura Hills` and `Pakshipathalam` all reachable.
 
 ### Large areas and coverage
 
@@ -887,6 +945,16 @@ A question with no trail-domain intent, or with no matching evidence, returns
 `not_in_context` and says so. The assistant does not expose retrieval topics,
 token matching or internal state names.
 
+Answers lead with what was asked. A gear question answers with the essential
+items rather than dumping the whole corpus, a rainfall question answers with
+the recorded figure rather than adding difficulty and gear, and evidence is
+woven into the sentence instead of printed as a citation after every line. The
+internal provenance vocabulary (`retrieved evidence`, `Evidence used:`,
+`derived from route and condition evidence`) is filtered out of anything shown
+to a person, and which engine wrote the prose is not displayed — a Gemini
+outage and a local answer look identical to the user by design, while
+`grounded` and `generated_by` remain in the API contract.
+
 Retrieved text is treated as **untrusted data**, never as instructions. Part of
 the corpus comes from an external web search, and a web page can contain text
 that tries to give the model new rules. The prompt states that the evidence
@@ -982,19 +1050,17 @@ required attribution stays visible instead of disappearing behind a hover.
   three. It is a way-level estimate, never a route judgement, and the per-tier
   numbers travel with every prediction so a weak tier is visible rather than
   averaged away.
-- **The alpine tier is the weak part** (F1 0.242, recall 0.228). It is 2.9% of
-  real graded ways, so it is the hardest tier to learn and the one where being
-  wrong matters most. The interface treats an alpine estimate as a prompt to
-  check the route, and says so on the card.
+- **The alpine tier is the weak part** (F1 0.242, recall 0.228), because it is
+  2.9% of real graded ways. The interface treats an alpine estimate as a prompt
+  to check the route and says so on the card. See
+  [Data Science](#data-science-what-was-built-evaluated-and-why) for the full
+  tier analysis.
 - **Why the score is not higher** is measured rather than asserted: 88.6% of
   training ways share identical OpenStreetMap tagging yet carry different
   recorded grades, and inside the largest such group the physical features
   reach only AUC 0.69 at separating alpine routes from easier ones. The
   recorded grade is not a function of the recorded tags. That is a property of
   volunteer mapping, and it bounds what any tag-reading model can do.
-- Route relations and connected components deliberately get **no** model
-  estimate, for the unit-mismatch reason given above. Their difficulty signal
-  is the recorded grade, if any, plus the measured route-demand profile.
 - Route relations and connected components deliberately get **no** model
   estimate, for the unit-mismatch reason given above. Their difficulty signal
   is the recorded grade, if any, plus the measured route-demand profile.

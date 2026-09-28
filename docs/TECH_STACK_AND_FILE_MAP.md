@@ -50,8 +50,11 @@ One in-flight request, capped output, cached, one polite retry on 429 only.
 ### `backend/app/services/trail_discovery.py`
 Supplemental semantic name and identity discovery via SearXNG (preferred, may
 run locally) with Tavily as the external fallback, then Gemini for extraction
-and deterministic title-derived candidates if Gemini is unavailable. It never
-creates geometry. Reports which provider actually answered.
+and deterministic candidates if Gemini is unavailable. Deterministic extraction
+reads both the result title and the result body, because search engines answer a
+place query with enumeration pages whose titles are editorial and keep every
+trail name in the body. It never creates geometry. Reports which provider
+actually answered.
 
 ### `backend/app/routes/trails.py`
 Selected-trail geometry analysis and the combined intelligence endpoint:

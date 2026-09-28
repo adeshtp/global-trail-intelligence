@@ -246,6 +246,12 @@ export type ResultCounts = {
   ranked: number;
   shown: number;
   weak_evidence: number;
+  /**
+   * Verified trails that rank but are held back on this page. The backend
+   * reports this truthfully instead of claiming zero, so a short page is
+   * never presented as a complete result set.
+   */
+  mapped_truncated?: number;
 };
 
 /**
@@ -276,9 +282,9 @@ export default function TrailSidebar({
     trails,
     trailLabel
   );
-  const mappedCount = trails.filter(
-    (trail) => trail.map_ready
-  ).length;
+  const mappedCount = counts
+    ? counts.mapped
+    : trails.filter((trail) => trail.map_ready).length;
 
   return (
     <aside className="flex h-full min-h-0 flex-col bg-[#0b1724]">
@@ -355,6 +361,20 @@ export default function TrailSidebar({
                 itself is verified.
               </p>
             ) : null}
+
+            {/*
+              Truncation is stated rather than hidden. Without this the page
+              would quietly present a short list as though it were everything
+              the search found.
+            */}
+            {counts.mapped_truncated ? (
+              <p className="mt-2 text-[10px] leading-4 text-white/45">
+                {counts.mapped_truncated.toLocaleString()} further verified
+                trail{counts.mapped_truncated === 1 ? "" : "s"} rank
+                {counts.mapped_truncated === 1 ? "s" : ""} below this page.
+                Load more to see {counts.mapped_truncated === 1 ? "it" : "them"}.
+              </p>
+            ) : null}
           </>
         ) : null}
 
@@ -362,9 +382,11 @@ export default function TrailSidebar({
           {counts
             ? `${counts.relevance_accepted.toLocaleString()} relevant trail${
                 counts.relevance_accepted === 1 ? "" : "s"
-              } found in the searched area, shown as ${mappedCount} route${
-                mappedCount === 1 ? "" : "s"
-              } on the map and ${counts.unmapped} without verified shape yet.`
+              } found in the searched area, of which ${mappedCount} ${
+                mappedCount === 1 ? "is" : "are"
+              } verified on the map and ${counts.unmapped} ${
+                counts.unmapped === 1 ? "is" : "are"
+              } still without verified shape yet.`
             : "Available paths are ranked using the geographic and OpenStreetMap evidence returned for the searched area."}
         </p>
       </div>

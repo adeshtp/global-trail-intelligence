@@ -172,6 +172,7 @@ type TrailDiscoveryResponse = {
     shown: number;
     shown_unmapped: number;
     weak_evidence: number;
+    mapped_truncated: number;
   };
   peak_search?: {
     is_peak_search: boolean;

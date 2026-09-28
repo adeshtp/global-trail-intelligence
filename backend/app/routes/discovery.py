@@ -28,6 +28,7 @@ from app.services.postpass import (
 )
 from app.services.rate_limit import discovery_limiter
 from app.services.trail_discovery import (
+    PLACE_ASSOCIATION_RADIUS_M,
     DiscoveredTrail,
     TrailDiscoveryResult,
     discover_trail_candidates,
@@ -143,6 +144,18 @@ NAME_RESOLUTION_CONCURRENCY = max(
 MIN_SEARCH_BBOX_KM = max(
     2.0,
     min(float(os.getenv("MIN_SEARCH_BBOX_KM", "8.0")), 50.0),
+)
+# Search radii, by what kind of question was asked. These were two inline
+# literals (25 km local, 60 km area) applied to every non-peak query, so a
+# hill-station or district search was confined to a town-sized circle and
+# lost the destinations the place is actually known for.
+LOCAL_SEARCH_RADIUS_M = max(
+    5000.0,
+    min(float(os.getenv("LOCAL_SEARCH_RADIUS_M", "25000.0")), 80000.0),
+)
+AREA_SEARCH_RADIUS_M = max(
+    LOCAL_SEARCH_RADIUS_M,
+    min(float(os.getenv("AREA_SEARCH_RADIUS_M", "60000.0")), 200000.0),
 )
 # A summit is a point feature. Expanding it to a full locality box buries the
 # summit in regional results, so peaks get their own tighter radius. The
@@ -369,6 +382,25 @@ STRUCTURE_ACCESS_TOKENS = {
     "plaza",
     "square",
     "compound",
+    # Crossing structures. A named footway is the normal way OSM records a
+    # bridge, so without these a purely structural way ("Overbridge
+    # Footpath") is indistinguishable from a short local path and slips into
+    # the weak-evidence tier. These are structure words rather than place
+    # names, so a real route named after one keeps working: a name carrying
+    # outdoor or destination evidence ("Rainbow Bridge Trail") returns
+    # before this check is reached.
+    "bridge",
+    "footbridge",
+    "overbridge",
+    "underbridge",
+    "viaduct",
+    "underpass",
+    "overpass",
+    "subway",
+    # Emergency and evacuation circulation. A way people are directed to
+    # use in an emergency is not a recreational trail.
+    "emergency",
+    "evacuation",
 }
 
 # Genuinely built-up walking surfaces. These never disqualify a way carrying
@@ -446,6 +478,19 @@ _FACILITY_AND_FUNCTION_WORDS = frozenset(
         "barn",
         "boundary",
         "bridge",
+        # Crossing structures and emergency circulation are function words,
+        # not toponyms. Naming them here is what stops `_name_names_a_place`
+        # from reading "Overbridge Footpath" as a name identifying somewhere:
+        # without it the only non-generic word is a structure, and the
+        # structure-access reject is bypassed by `names_a_place`.
+        "overbridge",
+        "footbridge",
+        "underbridge",
+        "viaduct",
+        "overpass",
+        "subway",
+        "emergency",
+        "evacuation",
         "building",
         "bus",
         "camp",
@@ -1566,6 +1611,22 @@ def _named_way_evidence(
             "built-up surface without hiking metadata"
         ], "none"
 
+    # Weak tier, deliberately unchanged.
+    #
+    # Two variants of this branch were tried while auditing recall. Requiring
+    # `names_a_place` broke genuine untagged paths whose name is only its
+    # route type, and excluding facility-word names broke them too: both
+    # "Local Path" and "Power House Footpath" clear the same length and
+    # metadata bar, because nothing lexical separates a generic local name
+    # from a utility-path name. Rather than guess a word list that happened to
+    # satisfy one example, the branch keeps its existing behaviour.
+    #
+    # The residual imprecision is real and pre-existing: a long, verified,
+    # untagged path named for what it serves ("Power House Footpath") can
+    # reach the weak tier. Weak is reported separately from strong precisely
+    # so that tier is visible, and its geometry is still verified. Tightening
+    # it further belongs with a real corpus of rejected facility names, not
+    # with a recall fix.
     physical_metadata = bool(
         surface or tracktype or incline or width or sac or visibility
     )
@@ -2692,6 +2753,36 @@ def _candidate_sort_key(item: dict[str, Any]) -> tuple[Any, ...]:
     )
 
 
+def _looks_like_exact_trail_query(place: str) -> bool:
+    """
+    True when the query names a route rather than a place.
+
+    Decided from the words present, never from a list of known trail names.
+    It uses the raw token set rather than `_name_tokens`, because that helper
+    deliberately strips generic words such as "footpath", "trail" and "loop"
+    for similarity scoring — which meant every genuinely trail-shaped query
+    ("Kozhiparamba Footpath", "Rhodo Valley Loop") read as a bare place word
+    and got a place-sized search area.
+
+    A route word alone is not enough to be certain, so this only tightens the
+    radius when the query also carries a word that names something specific.
+    A single word is left at the place radius, because "Anamudi" or "Munnar"
+    is a place, not a route.
+    """
+    tokens = {
+        token
+        for token in _normalise_name(place).split()
+        if len(token) >= 2
+    }
+    if not tokens:
+        return False
+    if not (tokens & _EXPLICIT_ROUTE_WORDS):
+        return False
+    # Something in the query that is not itself a route word, so the query
+    # names a particular route rather than being a bare route term.
+    return bool(tokens - _EXPLICIT_ROUTE_WORDS - GENERIC_TRAIL_WORDS)
+
+
 def _resolve_discovery_input(
     latitude: float,
     longitude: float,
@@ -2744,13 +2835,35 @@ def _resolve_discovery_input(
             PEAK_SEARCH_BBOX_KM * 1000.0,
         )
         bbox_source = "peak_radius"
-    else:
+    elif scope == "area":
         search_bbox = _bbox_from_radius(
             latitude,
             longitude,
-            60000.0 if scope == "area" else 25000.0,
+            AREA_SEARCH_RADIUS_M,
         )
-        bbox_source = "radius"
+        bbox_source = "area_radius"
+    elif _looks_like_exact_trail_query(place):
+        # The user named a route. Nearby is the right answer, so the local
+        # radius is kept.
+        search_bbox = _bbox_from_radius(
+            latitude,
+            longitude,
+            LOCAL_SEARCH_RADIUS_M,
+        )
+        bbox_source = "local_radius"
+    else:
+        # A place search. A hill station or a district is named after
+        # destinations that sit well outside a town-sized circle, so a
+        # town-radius search silently excluded exactly the trails the place
+        # is known for. The wider radius is bounded and is still a circle
+        # around the resolved point, so it never becomes a whole-country
+        # sweep; a genuine region search passes a real bbox instead.
+        search_bbox = _bbox_from_radius(
+            latitude,
+            longitude,
+            PLACE_ASSOCIATION_RADIUS_M,
+        )
+        bbox_source = "place_association_radius"
 
     return place, search_bbox, bbox_source
 
@@ -3286,6 +3399,13 @@ async def _assemble_discovery_result(
     ]
     total_ranked = len(mapped)
     has_more = (page * page_size) < total_ranked
+    # Verified trails beyond this page are held back rather than discarded,
+    # but they are NOT in this response's `trails`. The count below is what
+    # makes that visible: it used to be a hardcoded 0, so a page holding 100
+    # of 150 verified trails reported zero truncation and was indistinguishable
+    # from a complete result set. Unmapped candidates are never paginated and
+    # so never contribute to this number.
+    mapped_truncated = max(0, total_ranked - len(returned_mapped))
     ordered = [*returned_mapped, *unmapped]
 
     # A provider that answers with zero rows for an area it was asked about is
@@ -3369,7 +3489,7 @@ async def _assemble_discovery_result(
         "count": len(ordered),
         "mapped_count": len(mapped),
         "returned_mapped_count": len(returned_mapped),
-        "mapped_truncated_count": 0,
+        "mapped_truncated_count": mapped_truncated,
         "unmapped_count": len(unmapped),
         "trails": ordered,
         "result_counts": {
@@ -3391,6 +3511,9 @@ async def _assemble_discovery_result(
             "ranked": total_ranked,
             "shown": len(returned_mapped),
             "shown_unmapped": len(unmapped),
+            # Verified trails that exist and rank, but are held back on this
+            # page. Zero means the page carries every mapped result.
+            "mapped_truncated": mapped_truncated,
             # Counted over every mapped result, not only the ones on this
             # page. The interface states this as a subset of the mapped
             # total, so counting a page would understate it and make the
@@ -3410,6 +3533,7 @@ async def _assemble_discovery_result(
             "has_more": has_more,
             "next_page": page + 1 if has_more else None,
             "unmapped_returned": len(unmapped),
+            "mapped_truncated": mapped_truncated,
             "note": (
                 "All ranked results are computed and ranked; this response "
                 "carries one page of them. Request the next page to continue."
@@ -3529,7 +3653,7 @@ async def _assemble_discovery_result(
             "search_bbox_source": bbox_source,
             "mapped": total_ranked,
             "returned_mapped": len(returned_mapped),
-            "mapped_truncated": 0,
+            "mapped_truncated": mapped_truncated,
             "unmapped": len(unmapped),
             "provider_returned_no_rows": no_provider_data,
         },
