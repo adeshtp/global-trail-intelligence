@@ -1,0 +1,7 @@
+# Training/reproduction extras. Install after requirements.txt:
+#   pip install -r requirements.txt -r requirements-train.txt
+# The production server never imports these: xgboost is one compared
+# candidate in app/ml/train.py and rasterio reads the Copernicus DEM in
+# app/ml/feature_engineering.py during offline dataset construction only.
+xgboost==3.4.1
+rasterio==1.5.1

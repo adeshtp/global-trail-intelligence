@@ -1,0 +1,83 @@
+{
+  "attribution": "(c) OpenStreetMap contributors, ODbL, via the Postpass public SQL endpoint.",
+  "class_counts": {
+    "alpine_hiking": 3,
+    "demanding_alpine_hiking": 1,
+    "demanding_mountain_hiking": 27,
+    "hiking": 364,
+    "mountain_hiking": 114,
+    "strolling": 11
+  },
+  "collected_at_utc": "2026-09-27T17:32:05.384823+00:00",
+  "osm_object_type": "W",
+  "purpose": "Natural-prevalence final test. Drawn from geography already held out of training, with no per-class control, so the class mix is the real distribution of that area. Scored once, after model selection, and never fitted on.",
+  "rows": 520,
+  "sampling": {
+    "held_out_cells_total": 292,
+    "method": "Uniform random draw by md5(osm_id) ordering within each held-out one-degree cell, capped per cell.",
+    "region_note": "The public endpoint times out on a query that must touch every graded way worldwide, so the draw is restricted to the largest contiguous clusters of held-out cells and a bounding-box pre-filter lets the service use a spatial index. The result is a natural-prevalence sample of those regions, not a global one, and is reported as such.",
+    "regions": [
+      {
+        "bbox": [
+          11.0,
+          49.0,
+          15.0,
+          53.0
+        ],
+        "cells": 7
+      },
+      {
+        "bbox": [
+          5.0,
+          51.0,
+          7.0,
+          54.0
+        ],
+        "cells": 5
+      },
+      {
+        "bbox": [
+          8.0,
+          40.0,
+          10.0,
+          43.0
+        ],
+        "cells": 4
+      },
+      {
+        "bbox": [
+          174.0,
+          -39.0,
+          176.0,
+          -36.0
+        ],
+        "cells": 4
+      },
+      {
+        "bbox": [
+          -8.0,
+          30.0,
+          -6.0,
+          32.0
+        ],
+        "cells": 3
+      },
+      {
+        "bbox": [
+          6.0,
+          43.0,
+          8.0,
+          45.0
+        ],
+        "cells": 3
+      }
+    ],
+    "rows_per_cell": 20
+  },
+  "source": "https://postpass.geofabrik.de/api/interpreter",
+  "sql_sha256_prefix": "2ac3a95f4ae088fc",
+  "target": "sac_scale",
+  "terrain_coverage": 0.0,
+  "terrain_note": "No DEM was sampled for this test set. It is reported together with the terrain-free subset of the main holdout so the two are compared on like terrain coverage.",
+  "unique_osm_ways": 520
+}
