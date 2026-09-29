@@ -352,7 +352,6 @@ function ExplorePageContent() {
     setAssistantOpen,
   ] = useState(false);
 
-  const assistantDockRef = useRef<HTMLDivElement | null>(null);
 
   const [
     assistantAnswer,
@@ -969,7 +968,7 @@ function ExplorePageContent() {
     return () => {
       observer.disconnect();
     };
-  }, [selectedTrailGeometry]);
+  }, [selectedTrailGeometry, mapExpanded]);
 
   /* The assistant is reachable as a floating control at all times, but it
      opens itself once the user reaches the assistant section, so the button
@@ -993,7 +992,7 @@ function ExplorePageContent() {
     return () => {
       seen.disconnect();
     };
-  }, [selectedTrailGeometry]);
+  }, [selectedTrailGeometry, mapExpanded]);
 
   useEffect(() => {
     if (!selectedTrailGeometry) {
@@ -1473,7 +1472,6 @@ function ExplorePageContent() {
 
       <AssistantDock
         assistantAnswer={assistantAnswer}
-        assistantDockRef={assistantDockRef}
         assistantError={assistantError}
         assistantLoading={assistantLoading}
         assistantOpen={assistantOpen}

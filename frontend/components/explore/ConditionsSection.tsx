@@ -359,9 +359,9 @@ export default function ConditionsSection({
                     read at its own elevation.
                   </p>
                   <ul className="mt-1.5 space-y-0.5">
-                    {weather.samples.map((sample) => (
+                    {weather.samples.map((sample, index) => (
                       <li
-                        key={`${sample.latitude}-${sample.longitude}-${sample.elevation_m}`}
+                        key={`${sample.latitude}-${sample.longitude}-${sample.elevation_m}-${index}`}
                         className="text-[11px] leading-5 text-white/50"
                       >
                         <span className="capitalize text-white/70">

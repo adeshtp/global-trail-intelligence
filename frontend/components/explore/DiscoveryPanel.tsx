@@ -2,12 +2,17 @@
 
 import { type Dispatch, type SetStateAction } from "react";
 
-import type { Location, MapTrail, SelectedTrail } from "@/app/explore/types";
+import type {
+  Location,
+  MapTrail,
+  SelectedTrail,
+  TrailDiscoveryResponse,
+} from "@/app/explore/types";
 import CesiumMap from "@/components/CesiumMap";
 import TrailSidebar, { Trail } from "@/components/TrailSidebar";
 
 type DiscoveryPanelProps = {
-  coverage: { area_considered?: number[]; area_considered_source?: string; area_km2?: number; area_queried?: boolean; tiled?: boolean; tile_grid?: string | null; tiles_total?: number; tiles_queried?: number; tiles_failed?: number; tiles_skipped?: number; coverage_complete?: boolean; provider_returned_no_rows?: boolean; candidates_found?: number; candidates_accepted?: number; candidates_verified?: number; candidates_ranked?: number; candidates_returned?: number; results_truncated?: number; note?: string; } | undefined;
+  coverage: TrailDiscoveryResponse["coverage"];
   enriching: boolean;
   handleTrailSelect: (trail: Trail) => void;
   loadMoreError: string | null;
@@ -17,9 +22,9 @@ type DiscoveryPanelProps = {
   location: Location | null;
   locationName: string | null;
   mapTrails: MapTrail[];
-  pagination: { page: number; page_size: number; total_ranked: number; returned: number; has_more: boolean; next_page: number | null; unmapped_returned: number; note?: string; } | undefined;
-  peakSearch: { is_peak_search: boolean; summit_note: string | null; summit_routes: number; approach_routes: number; nearby_routes: number; method: string; } | null | undefined;
-  resultCounts: { definition: string; relevance_accepted: number; mapped: number; unmapped: number; ranked: number; shown: number; shown_unmapped: number; weak_evidence: number; mapped_truncated: number; } | undefined;
+  pagination: TrailDiscoveryResponse["pagination"];
+  peakSearch: TrailDiscoveryResponse["peak_search"];
+  resultCounts: TrailDiscoveryResponse["result_counts"];
   selectedTrailGeometry: SelectedTrail | null;
   selectedTrailSummary: Trail | null;
   setMapExpanded: Dispatch<SetStateAction<boolean>>;

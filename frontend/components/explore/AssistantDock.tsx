@@ -1,6 +1,6 @@
 "use client";
 
-import { type Dispatch, type RefObject, type SetStateAction } from "react";
+import { type Dispatch, type SetStateAction } from "react";
 
 import { suggestedQuestions } from "@/app/explore/helpers";
 import type { AssistantResponse, TrailIntelligenceResponse } from "@/app/explore/types";
@@ -8,7 +8,6 @@ import type { FormEvent } from "react";
 
 type AssistantDockProps = {
   assistantAnswer: AssistantResponse | null;
-  assistantDockRef: RefObject<HTMLDivElement | null>;
   assistantError: string | null;
   assistantLoading: boolean;
   assistantOpen: boolean;
@@ -21,7 +20,6 @@ type AssistantDockProps = {
 
 export default function AssistantDock({
   assistantAnswer,
-  assistantDockRef,
   assistantError,
   assistantLoading,
   assistantOpen,
@@ -35,7 +33,6 @@ export default function AssistantDock({
     <>
       {selectedIntelligence ? (
         <div
-          ref={assistantDockRef}
           className="pointer-events-none fixed bottom-5 right-5 z-40 flex w-[min(24rem,calc(100vw-2.5rem))] flex-col items-end gap-3"
         >
           {assistantOpen ? (
