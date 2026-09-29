@@ -95,14 +95,26 @@ class CircuitBreaker:
     def reset(self) -> None:
         self._failures = 0
         self._open_until: float | None = None
+        # While a probe is out, the time after which another may be sent, in
+        # case the probe never reports back.
+        self._probe_until: float | None = None
 
     def allow(self) -> bool:
+        now = self._clock()
+        if self._probe_until is not None:
+            if now < self._probe_until:
+                return False
+            # The probe never reported; send another rather than stay shut.
+            self._probe_until = now + self.cooldown_seconds
+            return True
         if self._open_until is None:
             return True
-        if self._clock() < self._open_until:
+        if now < self._open_until:
             return False
-        # Cooldown over: admit a probe. One more failure reopens at once.
+        # Cooldown over: admit one probe and hold everyone else back until it
+        # reports. One more failure reopens at once.
         self._open_until = None
+        self._probe_until = now + self.cooldown_seconds
         self._failures = self.failure_threshold - 1
         return True
 
@@ -110,6 +122,7 @@ class CircuitBreaker:
         self.reset()
 
     def record_failure(self) -> None:
+        self._probe_until = None
         self._failures += 1
         if self._failures >= self.failure_threshold:
             self._open_until = self._clock() + self.cooldown_seconds

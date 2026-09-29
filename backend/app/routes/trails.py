@@ -761,7 +761,7 @@ async def get_selected_trail_intelligence(
         else select_route_points(elevation_result.get("profile") or [])
     )
     try:
-        if len(route_points) > 1:
+        if route_points:
             # The midpoint reading is left to finish and is simply not used.
             # Cancelling it saved no network call (its fetch is shared and
             # shielded) and left that fetch's in-flight entry with no one to
@@ -868,7 +868,9 @@ async def get_selected_trail_intelligence(
                     f" Conditions are the worst case across "
                     f"{weather['sample_count']} points sampled along the "
                     f"route, each at its own elevation."
-                    if weather and weather.get("aggregation") == "worst_case"
+                    if weather
+                    and weather.get("aggregation") == "worst_case"
+                    and weather.get("sample_count", 0) > 1
                     else ""
                 )
             ),

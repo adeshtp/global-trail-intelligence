@@ -731,13 +731,18 @@ def aggregate_route_weather(
     return result
 
 
+def _coordinate(value: float) -> str:
+    """Five decimals (about a metre), never an exponent, no trailing zeros."""
+    return f"{value:.5f}".rstrip("0").rstrip(".") or "0"
+
+
 async def _fetch_route_weather_uncached(
     points: list[dict[str, Any]],
     window_hours: float | None = None,
 ) -> dict[str, Any]:
     params = {
-        "latitude": ",".join(f"{p['latitude']:g}" for p in points),
-        "longitude": ",".join(f"{p['longitude']:g}" for p in points),
+        "latitude": ",".join(_coordinate(p["latitude"]) for p in points),
+        "longitude": ",".join(_coordinate(p["longitude"]) for p in points),
         # Each location is read at its own height. Without this the provider
         # uses the height of its own terrain grid, which is wrong on a slope.
         "elevation": ",".join(f"{p['elevation_m']:.0f}" for p in points),

@@ -424,6 +424,9 @@ class IntelligenceContractTests(unittest.TestCase):
             "app.routes.trails.get_weather",
             AsyncMock(return_value=WEATHER),
         ), patch(
+            "app.routes.trails.get_route_weather",
+            AsyncMock(return_value=WEATHER),
+        ), patch(
             "app.routes.trails.get_elevation_profile",
             AsyncMock(return_value=ELEVATION),
         ):
@@ -693,6 +696,9 @@ class IntelligenceContractTests(unittest.TestCase):
             "app.routes.trails.get_ways", _get_ways
         ), patch(
             "app.routes.trails.get_weather",
+            AsyncMock(return_value=WEATHER),
+        ), patch(
+            "app.routes.trails.get_route_weather",
             AsyncMock(return_value=WEATHER),
         ), patch(
             "app.routes.trails.get_elevation_profile",

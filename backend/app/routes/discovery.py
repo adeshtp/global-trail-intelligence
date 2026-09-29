@@ -823,6 +823,9 @@ class _TileHarvest:
     ways_truncated: int = 0
     relations_truncated: int = 0
     splits: int = 0
+    # Re-queries that raised. Their rows are unknown, so the harvest is
+    # reported incomplete and is not remembered.
+    failed: int = 0
 
     def merge(self, other: "_TileHarvest") -> None:
         self.ways.extend(other.ways)
@@ -830,6 +833,7 @@ class _TileHarvest:
         self.ways_truncated += other.ways_truncated
         self.relations_truncated += other.relations_truncated
         self.splits += other.splits
+        self.failed += other.failed
 
 
 def _quadrants(
@@ -917,6 +921,7 @@ async def _expand_truncated(
                     "Re-query of a capped %s tile failed: %s", kind, rows
                 )
                 setattr(found, f"{kind}_truncated", 1)
+                found.failed += 1
             elif rows is not None:
                 getattr(found, kind).extend(rows)
         child = await _expand_truncated(
@@ -2635,10 +2640,11 @@ def _lies_along(
             line.intersection(buffered).length
             >= ALONG_FRACTION * line.length
         )
-    except Exception:
-        # A geometry object the provider may add: fall back to the earlier,
-        # looser behaviour (the caller has already matched name and bounds).
-        return True
+    except Exception as exc:
+        # A geometry that cannot be tested is not evidence the way is part of
+        # the route, and dropping it would hide a trail.
+        logger.warning("Could not test whether a way lies along a route: %s", exc)
+        return False
 
 
 def _collapse_connected_named_ways(
@@ -3221,6 +3227,7 @@ class _Harvest:
             isinstance(self.relations, BaseException)
             or isinstance(self.ways, BaseException)
             or self.tile_plan.get("tiles_failed", 0)
+            or self.tile_plan.get("queries_failed", 0)
         )
 
 
@@ -3383,6 +3390,7 @@ async def _harvest_rows(
             "ways": extra.ways_truncated,
         }
         tile_plan["tiles_split"] = extra.splits
+        tile_plan["queries_failed"] = extra.failed
         return _Harvest(relation_result, way_result, tile_plan)
 
     per_tile_ways = max(400, AREA_WAY_ROW_LIMIT // len(tiles))
@@ -3392,6 +3400,7 @@ async def _harvest_rows(
     counters = {
         "queried": 0,
         "failed": 0,
+        "queries_failed": 0,
         "relations_truncated": 0,
         "ways_truncated": 0,
         "splits": 0,
@@ -3417,6 +3426,10 @@ async def _harvest_rows(
             counters["failed"] += 1
             return
         counters["queried"] += 1
+        # One kind failing leaves the tile half read.
+        counters["queries_failed"] += isinstance(
+            way_rows, BaseException
+        ) + isinstance(relation_rows, BaseException)
         if not isinstance(way_rows, BaseException):
             way_hits.extend(way_rows)
         if not isinstance(relation_rows, BaseException):
@@ -3442,6 +3455,7 @@ async def _harvest_rows(
         counters["relations_truncated"] += extra.relations_truncated
         counters["ways_truncated"] += extra.ways_truncated
         counters["splits"] += extra.splits
+        counters["queries_failed"] += extra.failed
 
     # Every tile is scheduled at once; the semaphore alone bounds how many
     # run. Awaiting fixed batches made each batch wait for its slowest tile.
@@ -3451,6 +3465,7 @@ async def _harvest_rows(
     # identity, not position, decides identity, so the first row wins.
     tile_plan["tiles_queried"] = counters["queried"]
     tile_plan["tiles_failed"] = counters["failed"]
+    tile_plan["queries_failed"] = counters["queries_failed"]
     tile_plan["rows_truncated"] = {
         "relations": counters["relations_truncated"],
         "ways": counters["ways_truncated"],
@@ -4019,6 +4034,7 @@ async def _assemble_discovery_result(
                 and not no_provider_data
                 and not provider_failed
                 and not any(rows_truncated.values())
+                and not int(tile_plan.get("queries_failed", 0))
             ),
             "provider_returned_no_rows": no_provider_data,
             # Distinguishes "the source was asked and had nothing" from "the
