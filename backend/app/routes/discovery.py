@@ -417,6 +417,18 @@ PAVED_SURFACES = {
     "bitumen",
 }
 
+# Highways that are streets or street furniture rather than trails.
+URBAN_HIGHWAYS = {
+    "pedestrian",
+    "residential",
+    "unclassified",
+    "living_street",
+    "tertiary",
+    "secondary",
+    "primary",
+    "service",
+}
+
 
 def _is_structure_access(
     all_names: list[str],
@@ -1460,6 +1472,17 @@ def _named_way_evidence(
     width = _normalise_name(way.width)
     sport = _normalise_name(way.sport)
 
+    # foot=designated is how mappers mark a pedestrian street or a paved
+    # cycle/foot path. On a street or a built-up surface it says nothing about
+    # hiking, and it was the only evidence behind Brunswick Street and
+    # Redbraes Place appearing as Edinburgh trails. On natural ground it still
+    # counts, so countryside paths keep their evidence.
+    foot_designated = (
+        foot == "designated"
+        and surface not in PAVED_SURFACES
+        and highway not in URBAN_HIGHWAYS
+    )
+
     # ---------------------------------------------------------------
     # CHANNEL 1 - STRUCTURAL EVIDENCE
     # ---------------------------------------------------------------
@@ -1472,7 +1495,7 @@ def _named_way_evidence(
     if visibility:
         score += 88.0
         reasons.append(f"trail_visibility={visibility}")
-    if foot == "designated":
+    if foot_designated:
         score += 74.0
         reasons.append("foot=designated")
     if way.trailblazed:
@@ -1552,7 +1575,7 @@ def _named_way_evidence(
         route in HIKING_ROUTE_TYPES
         or sac
         or visibility
-        or foot == "designated"
+        or foot_designated
         or way.trailblazed
         or way.designation
         or way.hiking
@@ -1572,7 +1595,7 @@ def _named_way_evidence(
     durable_evidence = bool(
         sac
         or visibility
-        or foot == "designated"
+        or foot_designated
         or semantic_score >= 90.0
         or destination_words
     )
@@ -1699,16 +1722,7 @@ def _named_way_evidence(
     # well it is named. "North Giri Veethi" is a town street in a town. A real
     # trail is mapped as a path, footway, track or bridleway, and a route
     # relation or a grade tag overrides this too.
-    urban_highway = highway in {
-        "pedestrian",
-        "residential",
-        "unclassified",
-        "living_street",
-        "tertiary",
-        "secondary",
-        "primary",
-        "service",
-    }
+    urban_highway = highway in URBAN_HIGHWAYS
     names_a_place_on_trail = bool(
         names_a_place
         and surface not in PAVED_SURFACES
@@ -1727,7 +1741,7 @@ def _named_way_evidence(
         route in HIKING_ROUTE_TYPES
         or bool(sac)
         or bool(visibility)
-        or foot == "designated"
+        or foot_designated
         or bool(way.trailblazed)
         or bool(way.designation)
         or bool(way.hiking)
