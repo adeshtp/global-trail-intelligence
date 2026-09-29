@@ -273,5 +273,38 @@ class NearestDistanceTests(unittest.TestCase):
         )
 
 
+class NameNormalisationTests(unittest.TestCase):
+    """
+    The normaliser is called hundreds of thousands of times per country-sized
+    response on far fewer distinct names, so its string step is cached. Caching
+    must not change a single result.
+    """
+
+    CASES = {
+        "Sentier des Gardes": "sentier des gardes",
+        "  Trail   &  Loop ": "trail and loop",
+        "Chemin d'Assise, Cluny - Montcenis": "chemin d assise cluny montcenis",
+        "富士山": "fu shi shan",
+        "Zürich Höhenweg": "zurich hohenweg",
+        "É": "e",
+        "": "",
+    }
+
+    def test_it_returns_what_it_always_did(self) -> None:
+        for value, expected in self.CASES.items():
+            with self.subTest(value=value):
+                self.assertEqual(discovery._normalise_name(value), expected)
+
+    def test_empty_and_non_string_values_are_handled_as_before(self) -> None:
+        for value in (None, 0, False, [], {}):
+            self.assertEqual(discovery._normalise_name(value), "")
+        self.assertEqual(discovery._normalise_name(12), "12")
+
+    def test_repeated_calls_agree(self) -> None:
+        first = [discovery._normalise_name(v) for v in self.CASES]
+        second = [discovery._normalise_name(v) for v in self.CASES]
+        self.assertEqual(first, second)
+
+
 if __name__ == "__main__":
     unittest.main()

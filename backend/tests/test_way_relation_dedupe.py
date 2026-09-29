@@ -104,5 +104,49 @@ class WayAgainstRouteTests(unittest.TestCase):
         self.assertEqual(_kept_way_ids(a, b), {5})
 
 
+class ScaleTests(unittest.TestCase):
+    """
+    Each way was checked against every relation's name in turn, so a country
+    of 20,000 ways and 2,000 relations cost tens of millions of comparisons
+    (about 14 s of a profiled 18 s assembly). Relations are indexed by name.
+    """
+
+    def test_thousands_of_ways_against_thousands_of_relations_is_fast(self) -> None:
+        import time
+
+        candidates = []
+        for index in range(2000):
+            candidates.append(
+                _relation(
+                    name=f"Route {index}",
+                    osm_id=index,
+                    trail_id=f"relation:{index}",
+                    geometry={
+                        "type": "MultiLineString",
+                        "coordinates": [[[6.0 + index * 1e-3, 45.0], [6.0005 + index * 1e-3, 45.0]]],
+                    },
+                )
+            )
+        for index in range(20000):
+            candidates.append(
+                _way(
+                    [[8.0 + index * 1e-4, 46.0], [8.00005 + index * 1e-4, 46.0]],
+                    name=f"Way {index}",
+                    osm_id=100000 + index,
+                )
+            )
+        started = time.perf_counter()
+        kept = discovery._collapse_connected_named_ways(candidates)
+        elapsed = time.perf_counter() - started
+        self.assertEqual(len([c for c in kept if c["osm_type"] == "way"]), 20000)
+        self.assertLess(elapsed, 1.0)
+
+    def test_the_index_still_matches_on_name_alone_for_the_check(self) -> None:
+        # Same name, along the route: merged. Different name, same place: kept.
+        along = _way([[6.02, 45.0], [6.04, 45.0]], name="Sentier des Gardes", osm_id=1)
+        other = _way([[6.02, 45.0], [6.04, 45.0]], name="Another Path", osm_id=2)
+        self.assertEqual(_kept_way_ids(_relation(), along, other), {2})
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -11,6 +11,7 @@ import time
 import unicodedata
 from collections import OrderedDict, defaultdict
 from dataclasses import asdict, dataclass, field
+from functools import lru_cache
 from difflib import SequenceMatcher
 from typing import Any
 
@@ -1285,10 +1286,16 @@ def _stable_id(prefix: str, values: list[Any]) -> str:
 
 
 def _normalise_name(value: Any) -> str:
+    return _normalise_text(str(value or ""))
+
+
+@lru_cache(maxsize=131072)
+def _normalise_text(value: str) -> str:
+    """Pure in the string, and called hundreds of thousands of times."""
     text = unidecode(
         unicodedata.normalize(
             "NFKC",
-            str(value or ""),
+            value,
         )
     ).strip().casefold()
     text = text.replace("&", " and ")
@@ -2637,9 +2644,15 @@ def _lies_along(
 def _collapse_connected_named_ways(
     candidates: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    relation_names_with_bounds: list[
-        tuple[str, tuple[float, float, float, float], dict[str, Any] | None]
-    ] = []
+    # Relations by name, so each way is compared with the routes that share
+    # its name and not with every route (20,000 ways against 2,000 relations
+    # was tens of millions of comparisons).
+    relations_by_name: dict[
+        str,
+        list[
+            tuple[tuple[float, float, float, float], dict[str, Any] | None]
+        ],
+    ] = defaultdict(list)
     for candidate in candidates:
         if candidate.get("osm_type") != "relation":
             continue
@@ -2650,8 +2663,8 @@ def _collapse_connected_named_ways(
         ]:
             key = _normalise_name(name)
             if key and bounds is not None:
-                relation_names_with_bounds.append(
-                    (key, bounds, candidate.get("geometry"))
+                relations_by_name[key].append(
+                    (bounds, candidate.get("geometry"))
                 )
     route_buffers: dict[int, Any] = {}
 
@@ -2696,16 +2709,13 @@ def _collapse_connected_named_ways(
         name_key = _normalise_name(candidate.get("name"))
         way_bounds = _geometry_bounds(candidate.get("geometry"))
         duplicate_relation = any(
-            name_key == relation_name
-            and _bounds_overlap(way_bounds, relation_bounds)
+            _bounds_overlap(way_bounds, relation_bounds)
             and _lies_along(
                 candidate.get("geometry"), relation_geometry, route_buffers
             )
-            for (
-                relation_name,
-                relation_bounds,
-                relation_geometry,
-            ) in relation_names_with_bounds
+            for relation_bounds, relation_geometry in relations_by_name.get(
+                name_key, ()
+            )
         )
         if duplicate_relation:
             continue
@@ -3223,10 +3233,18 @@ _HARVEST_INFLIGHT: dict[tuple[Any, ...], asyncio.Task[_Harvest]] = {}
 def _harvest_key(
     search_bbox: tuple[float, float, float, float],
     scope: str,
+    center: tuple[float, float] | None = None,
 ) -> tuple[Any, ...]:
+    # Where the search started decides which tiles are read first, so it only
+    # matters (and only splits the cache) when the area is tiled and a time
+    # limit could leave some unread.
+    tiled = len(_tile_plan(search_bbox)[0]) > 1
     return (
         tuple(round(value, 5) for value in search_bbox),
         scope,
+        (round(center[0], 2), round(center[1], 2))
+        if tiled and center is not None
+        else None,
         AREA_RELATION_ROW_LIMIT,
         AREA_WAY_ROW_LIMIT,
         MAX_TILES,
@@ -3250,8 +3268,9 @@ async def _harvest_cached(
     scope: str,
     place: str,
     deadline: float,
+    center: tuple[float, float] | None = None,
 ) -> _Harvest:
-    key = _harvest_key(search_bbox, scope)
+    key = _harvest_key(search_bbox, scope, center)
     cached = _HARVEST_CACHE.get(key)
     if (
         cached is not None
@@ -3264,7 +3283,7 @@ async def _harvest_cached(
     task = _HARVEST_INFLIGHT.get(key)
     if task is None:
         task = asyncio.create_task(
-            _harvest_rows(search_bbox, scope, place, deadline)
+            _harvest_rows(search_bbox, scope, place, deadline, center)
         )
         _HARVEST_INFLIGHT[key] = task
     try:
@@ -3281,14 +3300,42 @@ async def _harvest_cached(
     return _copy_harvest(harvest)
 
 
+def _outward_from(
+    tiles: list[tuple[float, float, float, float]],
+    center: tuple[float, float] | None,
+) -> list[tuple[float, float, float, float]]:
+    """
+    Tiles nearest the searched place first.
+
+    Every tile is queued at once and the queue is first come, first served, so
+    this is the order they are read in. When the time budget runs out, the
+    tiles left unread are then the ones farthest from where the user searched,
+    not whichever lay at the far end of the grid.
+    """
+    if center is None:
+        return tiles
+    latitude, longitude = center
+    scale = math.cos(math.radians(latitude))
+
+    def distance(tile: tuple[float, float, float, float]) -> float:
+        return math.hypot(
+            ((tile[0] + tile[2]) / 2 - longitude) * scale,
+            (tile[1] + tile[3]) / 2 - latitude,
+        )
+
+    return sorted(tiles, key=distance)
+
+
 async def _harvest_rows(
     search_bbox: tuple[float, float, float, float],
     scope: str,
     place: str,
     deadline: float,
+    center: tuple[float, float] | None = None,
 ) -> _Harvest:
     """Read the relations and named ways for a search area from Postpass."""
     tiles, tile_plan = _tile_plan(search_bbox)
+    tiles = _outward_from(tiles, center)
     if len(tiles) == 1:
         # Small area: one query for each kind, no accounting overhead.
         limits = (
@@ -3489,7 +3536,9 @@ async def _run_discovery(
             )
         )
 
-    harvest = await _harvest_cached(search_bbox, scope, place, deadline)
+    harvest = await _harvest_cached(
+        search_bbox, scope, place, deadline, (latitude, longitude)
+    )
 
     agent_result: Any = None
     if agent_task is not None:
