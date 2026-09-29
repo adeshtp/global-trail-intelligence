@@ -178,7 +178,9 @@ PEAK_SEARCH_BBOX_KM = max(
 
 HIKING_ROUTE_TYPES = {"hiking", "foot", "walking"}
 PATH_HIGHWAYS = {"path", "footway", "bridleway", "steps"}
-NON_TRAIL_TRACK_HIGHWAYS = {"track", "pedestrian"}
+# `pedestrian` is deliberately absent: it is a street with the cars taken off
+# it. It is in URBAN_HIGHWAYS, so it is accepted only with real hiking evidence.
+NON_TRAIL_TRACK_HIGHWAYS = {"track"}
 # Highways that are not inherently trail-shaped but may still carry a real
 # named path in regions with coarse tagging. These are only ever considered
 # in the WEAK accept branch, never on their own.

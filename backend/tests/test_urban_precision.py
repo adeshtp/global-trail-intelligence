@@ -100,5 +100,86 @@ class FootDesignatedTests(unittest.TestCase):
                 )
 
 
+class PedestrianWayTests(unittest.TestCase):
+    """
+    highway=pedestrian is a street with the cars taken off it, not a trail.
+    Without hiking evidence it is not accepted whatever else is tagged, so a
+    missing surface tag cannot let one through.
+    """
+
+    def _accepted(self, way: PostpassWay) -> bool:
+        return discovery._named_way_evidence(way, place="Edinburgh")[0]
+
+    def test_an_untagged_pedestrian_way_is_not_a_trail(self) -> None:
+        for foot in (None, "designated", "yes"):
+            with self.subTest(foot=foot):
+                self.assertFalse(
+                    self._accepted(
+                        _way(
+                            "Featherhall Crescent",
+                            highway="pedestrian",
+                            surface=None,
+                            length_km=0.6,
+                            foot=foot,
+                        )
+                    )
+                )
+
+    def test_a_long_untagged_pedestrian_way_is_not_a_trail(self) -> None:
+        self.assertFalse(
+            self._accepted(
+                _way(
+                    "Old Town Passage",
+                    highway="pedestrian",
+                    surface="gravel",
+                    length_km=2.0,
+                    foot=None,
+                )
+            )
+        )
+
+    def test_a_pedestrian_way_with_real_hiking_evidence_is_kept(self) -> None:
+        for extra in ({"sac_scale": "hiking"}, {"trail_visibility": "good"}):
+            with self.subTest(extra=extra):
+                self.assertTrue(
+                    self._accepted(
+                        _way(
+                            "Sentier du Lac",
+                            highway="pedestrian",
+                            surface="gravel",
+                            foot=None,
+                            **extra,
+                        )
+                    )
+                )
+
+    def test_a_pedestrian_way_that_says_it_is_a_trail_is_kept(self) -> None:
+        self.assertTrue(
+            self._accepted(
+                _way(
+                    "Woodland Nature Trail",
+                    highway="pedestrian",
+                    surface="gravel",
+                    foot=None,
+                )
+            )
+        )
+
+    def test_paths_footways_and_tracks_are_unchanged(self) -> None:
+        for highway in ("path", "footway", "track"):
+            with self.subTest(highway=highway):
+                self.assertTrue(
+                    self._accepted(
+                        _way(
+                            "Nell Burn Path",
+                            highway=highway,
+                            surface="gravel",
+                            length_km=0.8,
+                            foot="designated",
+                        )
+                    )
+                )
+
+
 if __name__ == "__main__":
     unittest.main()
