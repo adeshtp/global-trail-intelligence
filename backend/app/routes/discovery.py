@@ -2596,11 +2596,49 @@ def _component_from_ways(
 # ============================================================
 
 
+# A way is part of a same-named route only if it lies along it: at least this
+# share of its length within about 5 m of the route's line. A bounding box is
+# not that test (a long route's box covers a whole region), and a way that only
+# crosses or touches a route is another trail that happens to meet it.
+ALONG_TOLERANCE_DEGREES = 0.00005
+ALONG_FRACTION = 0.9
+
+
+def _lies_along(
+    way_geometry: dict[str, Any] | None,
+    route_geometry: dict[str, Any] | None,
+    route_buffers: dict[int, Any],
+) -> bool:
+    way_segments = _geometry_segments(way_geometry)
+    route_segments = _geometry_segments(route_geometry)
+    if not way_segments or not route_segments:
+        return False
+    try:
+        line = shape({"type": "MultiLineString", "coordinates": way_segments})
+        key = id(route_geometry)
+        if key not in route_buffers:
+            # Built once per route, and only when a same-named way needs it.
+            route_buffers[key] = shape(
+                {"type": "MultiLineString", "coordinates": route_segments}
+            ).buffer(ALONG_TOLERANCE_DEGREES)
+        buffered = route_buffers[key]
+        if line.length == 0:
+            return bool(buffered.contains(line))
+        return (
+            line.intersection(buffered).length
+            >= ALONG_FRACTION * line.length
+        )
+    except Exception:
+        # A geometry object the provider may add: fall back to the earlier,
+        # looser behaviour (the caller has already matched name and bounds).
+        return True
+
+
 def _collapse_connected_named_ways(
     candidates: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     relation_names_with_bounds: list[
-        tuple[str, tuple[float, float, float, float]]
+        tuple[str, tuple[float, float, float, float], dict[str, Any] | None]
     ] = []
     for candidate in candidates:
         if candidate.get("osm_type") != "relation":
@@ -2612,7 +2650,10 @@ def _collapse_connected_named_ways(
         ]:
             key = _normalise_name(name)
             if key and bounds is not None:
-                relation_names_with_bounds.append((key, bounds))
+                relation_names_with_bounds.append(
+                    (key, bounds, candidate.get("geometry"))
+                )
+    route_buffers: dict[int, Any] = {}
 
     # Member ways of an accepted route (relation or connected component) are
     # that route's sections, not independent trails — whatever name they
@@ -2657,7 +2698,14 @@ def _collapse_connected_named_ways(
         duplicate_relation = any(
             name_key == relation_name
             and _bounds_overlap(way_bounds, relation_bounds)
-            for relation_name, relation_bounds in relation_names_with_bounds
+            and _lies_along(
+                candidate.get("geometry"), relation_geometry, route_buffers
+            )
+            for (
+                relation_name,
+                relation_bounds,
+                relation_geometry,
+            ) in relation_names_with_bounds
         )
         if duplicate_relation:
             continue
