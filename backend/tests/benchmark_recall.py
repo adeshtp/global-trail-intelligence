@@ -17,8 +17,9 @@ fields, so a drop caused by a cap or the time budget is visible and is not
 mistaken for a filter.
 
 A way counts as found when it is returned, when a returned route lists it, or
-when it lies on a returned route's line (within about 5 m): discovery shows one
-card for a trail, not one per way that happens to be part of it.
+when it lies along a returned route's line (at least 90% of its length within
+about 5 m of it): discovery shows one card for a trail, not one per way that
+happens to be part of it. Merely crossing a returned trail does not count.
 
 What this is NOT: human ground truth. It measures recall against what the
 Postpass mirror holds, in the areas listed. It cannot see trails OpenStreetMap
@@ -53,6 +54,10 @@ sys.path.insert(0, str(REPO_ROOT / "backend"))
 
 API = os.getenv("PUBLIC_API_URL", "http://127.0.0.1:8001").rstrip("/")
 PACE_SECONDS = 1.0
+# About 5 m. A way is "along" a route when at least this share of its length
+# lies within the tolerance of the route's line.
+TOLERANCE_DEGREES = 0.00005
+ALONG_FRACTION = 0.9
 
 
 @dataclass(frozen=True)
@@ -176,14 +181,22 @@ async def _covered_by_returned_lines(
         shape(t["geometry"]) for t in trails if t.get("geometry")
     ]
     tree = STRtree(geometries)
+    buffers: dict[int, object] = {}
     ways = await postpass.get_ways(sorted(missing))
     covered: set[int] = set()
     for way_id, way in ways.items():
         if not way.geometry:
             continue
         line = shape(way.geometry)
-        for index in tree.query(line.buffer(0.00005)):
-            if line.distance(geometries[int(index)]) < 0.00005:
+        if line.length == 0:
+            continue
+        for index in tree.query(line.buffer(TOLERANCE_DEGREES)):
+            index = int(index)
+            # Built only for the few routes a missing way could lie on.
+            if index not in buffers:
+                buffers[index] = geometries[index].buffer(TOLERANCE_DEGREES)
+            along = line.intersection(buffers[index]).length
+            if along >= ALONG_FRACTION * line.length:
                 covered.add(way_id)
                 break
     return covered, ways
@@ -227,7 +240,7 @@ async def run(area: Area) -> None:
         + _ratio(len(ref_ways & got_ways) + len(on_line), len(ref_ways))
         + f"   (named path-like with sac_scale or trail_visibility; "
         f"{len(ref_ways & got_ways)} returned or listed by a returned route, "
-        f"{len(on_line)} on a returned route's line)"
+        f"{len(on_line)} along a returned route's line)"
     )
     missing = sorted(ref_relations - got_relations)[:5]
     if missing:
