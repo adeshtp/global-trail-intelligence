@@ -7,6 +7,7 @@ import warnings
 from typing import Any
 
 from app.core.config import settings
+from app.services.products import safe_public_url
 
 _GENAI_CLIENT: Any | None = None
 
@@ -331,7 +332,22 @@ _INTENT_TRIGGERS: tuple[tuple[str, frozenset[str]], ...] = (
             }
         ),
     ),
+    (
+        "activity",
+        frozenset(
+            {
+                "altitude", "acclimatisation", "acclimatization",
+                "overnight", "technical", "mountaineering", "ferrata",
+                "kind", "type", "activity", "trip",
+            }
+        ),
+    ),
 )
+
+# A question can ask about several things at once ("is it steep and will it
+# rain?"). Each topic named is answered, up to this many, so a compound
+# question is not silently cut down to its first half.
+MAX_INTENTS_PER_QUESTION = 3
 
 
 def _num(value: Any) -> float | None:
@@ -352,16 +368,28 @@ def _round(value: float | None, places: int = 1) -> str | None:
     return f"{value:.{places}f}"
 
 
-def _question_intent(question: str) -> str | None:
+def _question_intents(question: str) -> list[str]:
+    """
+    Every topic a question names, in answer order, at most three.
+
+    A purchase verb still comes first, as before: "Where do I buy a shell?"
+    is about shopping even though "shell" is a gear word.
+    """
     tokens = set(_tokens(question))
     if not tokens:
-        return None
+        return []
+    intents: list[str] = []
     if tokens & _PURCHASE_WORDS:
-        return "products"
+        intents.append("products")
     for intent, triggers in _INTENT_TRIGGERS:
         if tokens & triggers:
-            return intent
-    return None
+            intents.append(intent)
+    return intents[:MAX_INTENTS_PER_QUESTION]
+
+
+def _question_intent(question: str) -> str | None:
+    intents = _question_intents(question)
+    return intents[0] if intents else None
 
 
 def _terrain_facts(
@@ -674,8 +702,17 @@ def _condition_answer(
     return lead
 
 
+def _item_words(item: str) -> set[str]:
+    return {
+        stem
+        for token in _tokens(item)
+        for stem in (token, *_stems(token))
+    }
+
+
 def _products_answer(
     intelligence: dict[str, Any],
+    question_tokens: set[str] | frozenset[str] = frozenset(),
 ) -> str:
     products = intelligence.get("products") or {}
     groups = [
@@ -688,15 +725,73 @@ def _products_answer(
             "I don't have any product links loaded for this trail. The "
             "Products section below the gear list is where they'd appear."
         )
-    named = ", ".join(
-        str(group.get("item"))
-        for group in groups[:4]
-        if group.get("item")
-    )
-    return (
-        f"Product and shopping links are available for: {named}. They're in "
-        f"the Products section under the gear list."
-    )
+
+    # A question that names an item ("buy trekking poles") is answered for
+    # that item; one that does not is answered for the first few.
+    asked = {
+        stem
+        for token in question_tokens
+        for stem in (token, *_stems(token))
+    }
+    named = [g for g in groups if _item_words(str(g.get("item") or "")) & asked]
+    chosen = (named or groups)[:4]
+
+    lines: list[str] = []
+    for group in chosen:
+        card = group.get("card") if isinstance(group.get("card"), dict) else {}
+        item = str(group.get("item") or card.get("gear_item") or "").strip()
+        url = safe_public_url(card.get("url"))
+        retailer = str(card.get("retailer") or "").strip()
+        if not item:
+            continue
+        if not url:
+            lines.append(f"• {item}: no working shop link was found.")
+        elif card.get("mode") == "direct_product":
+            product = str(card.get("name") or item).strip()
+            lines.append(
+                f"• {item}: {product}"
+                + (f" at {retailer}" if retailer else "")
+                + f" — {url}"
+            )
+        else:
+            lines.append(
+                f"• {item}: shop search results"
+                + (f" at {retailer}" if retailer else "")
+                + f", not a specific product — {url}"
+            )
+    if not lines:
+        return (
+            "I don't have any product links loaded for this trail. The "
+            "Products section below the gear list is where they'd appear."
+        )
+    return "Where to look for it:\n\n" + "\n".join(lines)
+
+
+def _activity_answer(intelligence: dict[str, Any]) -> str:
+    gear = intelligence.get("gear") or {}
+    activity = gear.get("activity") or intelligence.get("activity") or {}
+    label = str(activity.get("label") or "").strip()
+    if not label:
+        return (
+            "I don't have enough information to say what kind of trip this "
+            "route is."
+        )
+    reasons = [
+        str(reason).strip()
+        for reason in (activity.get("reasons") or [])
+        if str(reason).strip()
+    ]
+    answer = f"{label}" + (f" — {'; '.join(reasons)}." if reasons else ".")
+    preparation = [
+        str(item.get("item")).strip()
+        for item in (gear.get("items") or [])
+        if isinstance(item, dict)
+        and item.get("need") in {"acclimatisation", "overnight", "experience"}
+        and item.get("item")
+    ]
+    if preparation:
+        answer += " Worth planning for: " + "; ".join(preparation) + "."
+    return answer
 
 
 def _suitability_answer(
@@ -724,31 +819,39 @@ def _compose_local_answer(
     caller can fall back to the retrieved passages rather than forcing a
     shape onto a question that does not have one.
     """
-    intent = _question_intent(question)
-    if intent is None:
+    intents = _question_intents(question)
+    if not intents:
         return None
     tokens = set(_tokens(question))
     wants_all = bool(tokens & {"all", "everything", "every", "list", "full"})
 
-    if intent == "rainfall":
-        sentences = _rain_sentences(intelligence)
-        if not sentences:
-            return (
-                "I don't have recent rainfall data for this trail, so I "
-                "can't tell you how much rain it has received."
-            )
-        return " ".join(sentences)
-    if intent == "difficulty":
-        return _difficulty_answer(trail, intelligence)
-    if intent == "gear":
-        return _gear_answer(intelligence, wants_all=wants_all)
-    if intent == "condition":
-        return _condition_answer(intelligence)
-    if intent == "products":
-        return _products_answer(intelligence)
-    if intent == "suitability":
-        return _suitability_answer(intelligence)
-    return None
+    def answer_for(intent: str) -> str | None:
+        if intent == "rainfall":
+            sentences = _rain_sentences(intelligence)
+            if not sentences:
+                return (
+                    "I don't have recent rainfall data for this trail, so I "
+                    "can't tell you how much rain it has received."
+                )
+            return " ".join(sentences)
+        if intent == "difficulty":
+            return _difficulty_answer(trail, intelligence)
+        if intent == "gear":
+            return _gear_answer(intelligence, wants_all=wants_all)
+        if intent == "condition":
+            return _condition_answer(intelligence)
+        if intent == "products":
+            return _products_answer(intelligence, tokens)
+        if intent == "suitability":
+            return _suitability_answer(intelligence)
+        if intent == "activity":
+            return _activity_answer(intelligence)
+        return None
+
+    answers = [
+        answer for intent in intents if (answer := answer_for(intent))
+    ]
+    return "\n\n".join(answers) if answers else None
 
 
 # Passages whose text is written for the model rather than for a person.
@@ -1256,11 +1359,44 @@ def _build_corpus(
             "missing evidence",
         )
 
+    # ---------------- ACTIVITY ----------------
+    activity = gear.get("activity") or intelligence.get("activity") or {}
+    if activity.get("label"):
+        reasons = "; ".join(
+            str(reason) for reason in (activity.get("reasons") or [])
+        )
+        add(
+            "terrain",
+            (
+                f"Trip type: {activity['label']}"
+                + (f" ({reasons})." if reasons else ".")
+            ),
+            "derived from route measurements and recorded OSM tags",
+            boost=1.0,
+        )
+
     # ---------------- PRODUCTS ----------------
     groups = products.get("groups") or []
     for group in groups:
         if not isinstance(group, dict):
             continue
+        card = group.get("card") if isinstance(group.get("card"), dict) else {}
+        card_url = safe_public_url(card.get("url"))
+        if card_url:
+            retailer = str(card.get("retailer") or "a retailer").strip()
+            if card.get("mode") == "direct_product":
+                card_text = (
+                    f"For {group.get('item')}, the shop card is "
+                    f"{card.get('name') or group.get('item')} at "
+                    f"{retailer}: {card_url}."
+                )
+            else:
+                card_text = (
+                    f"For {group.get('item')}, the shop link is a "
+                    f"search-results page at {retailer}, not a specific "
+                    f"product: {card_url}."
+                )
+            add("products", card_text, "external product search", boost=1.2)
         results = group.get("product_results") or []
         tier = next(
             (

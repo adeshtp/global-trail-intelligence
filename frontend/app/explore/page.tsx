@@ -2441,6 +2441,17 @@ function ExplorePageContent() {
               suitability: selectedIntelligence.suitability,
               gear: selectedIntelligence.gear,
               difficulty: selectedIntelligence.difficulty,
+              // The shop cards the page already shows, trimmed to what an
+              // answer needs, so "where can I buy poles?" can be answered.
+              products: productResults
+                ? {
+                    groups: productResults.groups.map((group) => ({
+                      item: group.item,
+                      status: group.status,
+                      card: group.card,
+                    })),
+                  }
+                : undefined,
             },
           }),
           cache: "no-store",
