@@ -334,6 +334,45 @@ def _is_editorial(title: str, snippet: str) -> bool:
         for pattern in _EDITORIAL_PATTERNS
     )
 
+
+# Path segments that identify a page as editorial whatever its title says.
+# Whole segments only: "/poles-guide" is not "/guides/".
+_EDITORIAL_URL_SEGMENTS = frozenset(
+    {
+        "blog",
+        "blogs",
+        "review",
+        "reviews",
+        "guide",
+        "guides",
+        "article",
+        "articles",
+        "news",
+        "magazine",
+        "expert-advice",
+    }
+)
+
+
+def _is_editorial_result(result: dict[str, Any]) -> bool:
+    """
+    True when a result is review or guide content by title, snippet or path.
+
+    Decides where a "Shop options" link may point. It is deliberately not
+    used to reject results from the list of related web results.
+    """
+    if result.get("editorial"):
+        return True
+    try:
+        path = urlsplit(str(result.get("url") or "")).path.casefold()
+    except ValueError:
+        return False
+    return any(
+        segment in _EDITORIAL_URL_SEGMENTS
+        for segment in path.split("/")
+    )
+
+
 # Categories that are never a hiking product, however the keyword matched.
 _OFF_TOPIC_MARKERS = (
     "equestrian",
@@ -838,12 +877,15 @@ def _build_card(
 
     # Mode B. Prefer a real retailer destination that the provider actually
     # returned for this category, so the link is a page that was seen rather
-    # than a URL shape that was guessed.
+    # than a URL shape that was guessed. A review or guide is never a place to
+    # shop, however high search ranked it, so it is skipped here and, with no
+    # other destination, the card falls back to a search link.
     destination = next(
         (
             result
             for result in relevant
             if safe_public_url(result.get("url"))
+            and not _is_editorial_result(result)
         ),
         None,
     )
