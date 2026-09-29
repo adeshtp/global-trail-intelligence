@@ -156,6 +156,26 @@ class ScatteredNetworkTests(unittest.TestCase):
         self.assertNotIn("overnight", needs)
         self.assertNotIn("resupply", needs)
 
+    def test_the_gear_reasons_state_the_largest_piece_not_the_total(self) -> None:
+        # 236 km of pieces, the largest 118 km: the plan must say 118.
+        analysis = {
+            "distance_km": 236.0,
+            "completeness": {"status": "separate_pieces", "main_chain_share": 0.5},
+        }
+        weather = {"current": {"temperature": 18.0, "wind_speed": 6.0}}
+        trail = _trail()
+        condition = condition_likelihood(trail, trail["terrain"], weather)
+        items = {
+            item["need"]: item
+            for item in gear_recommendations(
+                trail, analysis, weather, condition
+            )["items"]
+        }
+        for need in ("overnight", "resupply"):
+            text = items[need]["reason"] + " ".join(items[need]["evidence"])
+            self.assertIn("118", text, need)
+            self.assertNotIn("236", text, need)
+
     def test_a_long_route_with_gaps_is_still_a_multi_day_trek(self) -> None:
         analysis = {
             "distance_km": 172.0,
