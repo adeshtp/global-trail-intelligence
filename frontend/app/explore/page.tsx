@@ -14,19 +14,26 @@ import {
 
 import ExploreSearch from "@/components/ExploreSearch";
 
-import TrailSidebar, {
-  Trail,
-} from "@/components/TrailSidebar";
+import { Trail } from "@/components/TrailSidebar";
 
 import CesiumMap from "@/components/CesiumMap";
+import AssistantDock from "@/components/explore/AssistantDock";
 import AssistantSection from "@/components/explore/AssistantSection";
 import ConditionsSection from "@/components/explore/ConditionsSection";
+import DiscoveryPanel from "@/components/explore/DiscoveryPanel";
 import ElevationSection from "@/components/explore/ElevationSection";
+import ExploreHeader from "@/components/explore/ExploreHeader";
 import GearSection from "@/components/explore/GearSection";
 import ProductsSection from "@/components/explore/ProductsSection";
+import SectionNav from "@/components/explore/SectionNav";
 import SuitabilitySection from "@/components/explore/SuitabilitySection";
 import TrailOverviewSection from "@/components/explore/TrailOverviewSection";
 
+import {
+  buildAssistantRequest,
+  buildProductsRequest,
+  postJson,
+} from "./api";
 import {
   API_BASE_URL,
   ASSISTANT_TIMEOUT_MS,
@@ -34,7 +41,6 @@ import {
   INTELLIGENCE_TIMEOUT_MS,
   PRODUCTS_TIMEOUT_MS,
   abortAfter,
-  suggestedQuestions,
 } from "./helpers";
 import type {
   AssistantResponse,
@@ -951,29 +957,12 @@ function ExplorePageContent() {
       setElevationError(null);
 
       try {
-        const response = await fetch(
-          `${API_BASE_URL}/api/trails/intelligence`,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              trail: selectedTrail,
-            }),
-            cache: "no-store",
-            signal: controller.signal,
-          }
+        const intelligence = await postJson<TrailIntelligenceResponse>(
+          "/api/trails/intelligence",
+          { trail: selectedTrail },
+          controller.signal,
+          "Selected trail intelligence"
         );
-
-        if (!response.ok) {
-          throw new Error(
-            `Selected trail intelligence failed: ${response.status}`
-          );
-        }
-
-        const intelligence =
-          (await response.json()) as TrailIntelligenceResponse;
 
         if (
           !intelligence.analysis?.midpoint_coordinate ||
@@ -1078,30 +1067,12 @@ function ExplorePageContent() {
     setProductsError(null);
 
     try {
-      const response = await fetch(
-        `${API_BASE_URL}/api/trails/products`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            intelligence: {
-              gear: selectedIntelligence.gear,
-              condition: selectedIntelligence.condition,
-            },
-          }),
-          cache: "no-store",
-          signal: controller.signal,
-        }
+      const data = await postJson<ProductSearchResponse>(
+        "/api/trails/products",
+        buildProductsRequest(selectedIntelligence),
+        controller.signal,
+        "Product search"
       );
-
-      if (!response.ok) {
-        throw new Error(`Product search failed: ${response.status}`);
-      }
-
-      const data =
-        (await response.json()) as ProductSearchResponse;
       if (
         controller.signal.aborted ||
         productsAbortRef.current !== controller
@@ -1162,63 +1133,17 @@ function ExplorePageContent() {
     setAssistantError(null);
 
     try {
-      const response = await fetch(
-        `${API_BASE_URL}/api/trails/assistant`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            question: assistantQuestion.trim(),
-            trail: {
-              trail_id: selectedTrailGeometry.trail_id,
-              osm_type: selectedTrailGeometry.osm_type,
-              osm_id: selectedTrailGeometry.osm_id,
-              name: selectedTrailGeometry.name,
-              route_type: selectedTrailGeometry.route_type,
-              highway_type: selectedTrailGeometry.highway_type,
-              source: selectedTrailGeometry.source,
-              geometry_hash: selectedTrailGeometry.geometry_hash,
-              member_way_ids: selectedTrailGeometry.member_way_ids,
-            },
-            intelligence: {
-              analysis: {
-                distance_km: selectedIntelligence.analysis.distance_km,
-                component_count: selectedIntelligence.analysis.component_count,
-              },
-              terrain: selectedIntelligence.terrain
-                ? { metrics: selectedIntelligence.terrain.metrics }
-                : null,
-              weather: selectedIntelligence.weather,
-              condition: selectedIntelligence.condition,
-              suitability: selectedIntelligence.suitability,
-              gear: selectedIntelligence.gear,
-              difficulty: selectedIntelligence.difficulty,
-              // The shop cards the page already shows, trimmed to what an
-              // answer needs, so "where can I buy poles?" can be answered.
-              products: productResults
-                ? {
-                    groups: productResults.groups.map((group) => ({
-                      item: group.item,
-                      status: group.status,
-                      card: group.card,
-                    })),
-                  }
-                : undefined,
-            },
-          }),
-          cache: "no-store",
-          signal: controller.signal,
-        }
+      const data = await postJson<AssistantResponse>(
+        "/api/trails/assistant",
+        buildAssistantRequest({
+          question: assistantQuestion,
+          trail: selectedTrailGeometry,
+          intelligence: selectedIntelligence,
+          products: productResults,
+        }),
+        controller.signal,
+        "Assistant request"
       );
-
-      if (!response.ok) {
-        throw new Error(`Assistant request failed: ${response.status}`);
-      }
-
-      const data =
-        (await response.json()) as AssistantResponse;
       if (
         controller.signal.aborted ||
         assistantAbortRef.current !== controller
@@ -1285,34 +1210,9 @@ function ExplorePageContent() {
           HEADER
       ============================================================ */}
 
-      <header className="border-b border-white/[0.06]">
-
-        <div className="mx-auto flex max-w-[1440px] items-center justify-between px-6 py-6 md:px-10 lg:px-14">
-
-          <div>
-
-            <p className="text-[10px] uppercase tracking-[0.22em] text-white/40">
-              Explore
-            </p>
-
-            <h1 className="mt-1 text-[22px] font-semibold tracking-[-0.03em]">
-              Find your trail.
-            </h1>
-
-          </div>
-
-
-          {locationName && (
-            <div className="hidden max-w-[500px] truncate rounded-full border border-white/10 bg-white/[0.04] px-4 py-2 text-xs text-white/55 md:block">
-              {
-                locationName
-              }
-            </div>
-          )}
-
-        </div>
-
-      </header>
+      <ExploreHeader
+        locationName={locationName}
+      />
 
 
       {/* ============================================================
@@ -1322,56 +1222,11 @@ function ExplorePageContent() {
           on narrow screens instead of wrapping.
       ============================================================ */}
 
-      {selectedTrailGeometry && (
-        <div className="sticky top-0 z-30 mx-auto w-full max-w-[1440px] px-6 pt-3 md:px-10 lg:px-14">
-          <nav
-            aria-label="Selected trail sections"
-            className="flex items-center gap-1 overflow-x-auto rounded-2xl border border-white/10 bg-[#0b1724] px-2 py-1.5 text-[11px] shadow-[0_8px_24px_rgba(0,0,0,0.28)]"
-          >
-            {[
-              ["trail-discovery", "Trail"],
-              ["elevation", "Elevation"],
-              ["conditions", "Weather"],
-              ["suitability", "Suitability"],
-              ["gear", "Gear"],
-              ["products", "Products"],
-              ["assistant", "Assistant"],
-            ].map(([target, label]) => {
-              const isActive =
-                activeSection === target;
-              return (
-                <button
-                  key={target}
-                  type="button"
-                  aria-current={
-                    isActive
-                      ? "true"
-                      : undefined
-                  }
-                  onClick={() => {
-                    const element =
-                      document.getElementById(
-                        target
-                      );
-                    element?.scrollIntoView({
-                      behavior: "smooth",
-                      block: "start",
-                    });
-                    setActiveSection(target);
-                  }}
-                  className={`whitespace-nowrap rounded-xl px-3 py-2 font-semibold transition ${
-                    isActive
-                      ? "bg-sky-300/12 text-sky-200"
-                      : "text-white/50 hover:bg-white/[0.06] hover:text-white/85"
-                  }`}
-                >
-                  {label}
-                </button>
-              );
-            })}
-          </nav>
-        </div>
-      )}
+      <SectionNav
+        activeSection={activeSection}
+        selectedTrailGeometry={selectedTrailGeometry}
+        setActiveSection={setActiveSection}
+      />
 
 
       {/* ============================================================
@@ -1399,162 +1254,25 @@ function ExplorePageContent() {
       ============================================================ */}
 
       {!mapExpanded && (
-        <section
-          id="trail-discovery"
-          className="mx-auto max-w-[1440px] scroll-mt-20 px-6 py-7 md:px-10 lg:px-14"
-        >
-
-          <div className="grid h-[620px] min-h-0 grid-cols-1 overflow-hidden rounded-[24px] border border-white/10 bg-[#0d1825] shadow-[0_25px_70px_rgba(0,0,0,0.22)] lg:grid-cols-[380px_minmax(0,1fr)]">
-
-            <div className="min-h-0 overflow-hidden border-b border-white/10 lg:border-b-0 lg:border-r">
-
-              <TrailSidebar
-                
-                trails={trails}
-                
-                loading={loadingTrails}
-                
-                selectedTrail={selectedTrailSummary}
-                
-                onTrailSelect={handleTrailSelect}
-
-                counts={resultCounts}
-              
-              />
-
-
-              {/* A provider problem and the coverage accounting are two
-                  different facts, so both are shown rather than one replacing
-                  the other. */}
-              {trailError && (
-                <div className="border-t border-white/10 bg-[#0b1724] px-5 py-3">
-
-                  <p className="text-[11px] leading-5 text-white/45">
-                    {
-                      trailError
-                    }
-                  </p>
-
-                </div>
-              )}
-
-
-              {!loadingTrails &&
-                !enriching &&
-                coverage && (
-                  <div className="border-t border-white/10 bg-[#0b1724] px-5 py-3">
-
-                    <p className="text-[10px] uppercase tracking-[0.15em] text-white/30">
-                      Searched coverage
-                    </p>
-
-                    <p className="mt-1.5 text-[11px] leading-5 text-white/45">
-                      {
-                        coverage.provider_returned_no_rows
-                          ? "The map data source was searched and returned no rows at all for this area, so nothing can be concluded here about what is mapped."
-                          : coverage.coverage_complete
-                            ? `Searched ${(
-                                coverage.area_km2 ?? 0
-                              ).toLocaleString(
-                                undefined,
-                                { maximumFractionDigits: 0 }
-                              )} km²${
-                                coverage.tiled
-                                  ? ` in ${coverage.tiles_queried} of ${
-                                      coverage.tiles_total
-                                    } searched regions`
-                                  : ""
-                              }.`
-                            : `Only ${coverage.tiles_queried} of ${
-                                coverage.tiles_total
-                              } searched regions returned, so this area is not fully covered.`
-                      }
-                      {
-                        pagination && !coverage.provider_returned_no_rows
-                          ? ` ${pagination.total_ranked.toLocaleString()} verified ${
-                              pagination.total_ranked === 1
-                                ? "trail was"
-                                : "trails were"
-                            } ranked, showing ${
-                              trails.length
-                            }.`
-                          : ""
-                      }
-                    </p>
-                    {peakSearch?.is_peak_search ? (
-                      <div className="mt-2.5 rounded-xl border border-sky-300/15 bg-sky-300/[0.04] p-3">
-                        <p className="text-[10px] uppercase tracking-[0.15em] text-sky-200/60">
-                          Summit
-                        </p>
-                        <p className="mt-1 text-[11px] leading-5 text-white/60">
-                          {peakSearch.summit_note}
-                        </p>
-                      </div>
-                    ) : null}
-
-                    {pagination?.has_more ? (
-                      <button
-                        type="button"
-                        onClick={loadMoreTrails}
-                        disabled={loadingMore}
-                        className="mt-2.5 w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-[11px] font-semibold text-white/70 transition hover:border-sky-300/30 hover:text-white disabled:opacity-50"
-                      >
-                        {loadingMore
-                          ? "Loading more…"
-                          : `Show more (${Math.max(
-                              pagination.total_ranked - trails.length,
-                              0
-                            ).toLocaleString()} more ranked)`}
-                      </button>
-                    ) : pagination && pagination.total_ranked > 0 ? (
-                      <p className="mt-2 text-[10px] text-white/25">
-                        End of the ranked results for this search.
-                      </p>
-                    ) : null}
-
-                  </div>
-                )}
-
-            </div>
-
-
-            <div className="relative min-h-0 overflow-hidden">
-
-              <CesiumMap
-
-                location={
-                  location
-                }
-
-                locationName={
-                  locationName
-                }
-
-                mapTrails={
-                  mapTrails
-                }
-
-                selectedTrail={
-                  selectedTrailGeometry
-                }
-
-                expanded={
-                  false
-                }
-
-                onExpand={() =>
-                  setMapExpanded(
-                    true
-                  )
-                }
-
-              />
-
-            </div>
-
-          </div>
-
-        </section>
+      <DiscoveryPanel
+        coverage={coverage}
+        enriching={enriching}
+        handleTrailSelect={handleTrailSelect}
+        loadMoreTrails={loadMoreTrails}
+        loadingMore={loadingMore}
+        loadingTrails={loadingTrails}
+        location={location}
+        locationName={locationName}
+        mapTrails={mapTrails}
+        pagination={pagination}
+        peakSearch={peakSearch}
+        resultCounts={resultCounts}
+        selectedTrailGeometry={selectedTrailGeometry}
+        selectedTrailSummary={selectedTrailSummary}
+        setMapExpanded={setMapExpanded}
+        trailError={trailError}
+        trails={trails}
+      />
       )}
 
 
@@ -1697,119 +1415,18 @@ function ExplorePageContent() {
           never covers the map, which is in the top panel.
       ============================================================ */}
 
-      {selectedIntelligence ? (
-        <div
-          ref={assistantDockRef}
-          className="pointer-events-none fixed bottom-5 right-5 z-40 flex w-[min(24rem,calc(100vw-2.5rem))] flex-col items-end gap-3"
-        >
-          {assistantOpen ? (
-            <div className="pointer-events-auto max-h-[min(32rem,70vh)] w-full overflow-y-auto rounded-2xl border border-white/12 bg-[#0b1724]/97 p-4 shadow-[0_24px_60px_rgba(0,0,0,0.55)] backdrop-blur">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="text-[10px] uppercase tracking-[0.15em] text-white/35">
-                    Trail assistant
-                  </p>
-                  <p className="mt-0.5 text-[12px] font-semibold text-white/85">
-                    {selectedIntelligence.trail.name ??
-                      "Selected trail"}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  aria-label="Close assistant"
-                  onClick={() => setAssistantOpen(false)}
-                  className="shrink-0 rounded-lg px-2 py-1 text-[11px] text-white/40 transition hover:bg-white/[0.07] hover:text-white"
-                >
-                  Close
-                </button>
-              </div>
-
-              <p className="mt-2 text-[10px] leading-4 text-white/30">
-                Answers come only from this trail&apos;s verified data.
-              </p>
-
-              <form
-                onSubmit={handleAssistantSubmit}
-                className="mt-3"
-              >
-                <div className="flex gap-2">
-                  <input
-                    value={assistantQuestion}
-                    onChange={(event) =>
-                      setAssistantQuestion(event.target.value)
-                    }
-                    placeholder="Ask about this trail…"
-                    maxLength={600}
-                    className="min-w-0 flex-1 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-[13px] text-white outline-none placeholder:text-white/25 focus:border-sky-300/40"
-                  />
-                  <button
-                    type="submit"
-                    disabled={
-                      assistantLoading ||
-                      !assistantQuestion.trim()
-                    }
-                    className="shrink-0 rounded-xl border border-sky-300/20 bg-sky-300/[0.08] px-3 py-2 text-[11px] font-semibold text-sky-200 transition hover:bg-sky-300/[0.14] disabled:cursor-wait disabled:opacity-60"
-                  >
-                    {assistantLoading ? "…" : "Ask"}
-                  </button>
-                </div>
-              </form>
-
-              <div className="mt-3 flex flex-wrap gap-1.5">
-                {suggestedQuestions(
-                  selectedIntelligence
-                ).map((prompt) => (
-                  <button
-                    key={prompt}
-                    type="button"
-                    onClick={() =>
-                      setAssistantQuestion(prompt)
-                    }
-                    className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 text-[10px] text-white/50 transition hover:border-sky-300/25 hover:text-white/80"
-                  >
-                    {prompt}
-                  </button>
-                ))}
-              </div>
-
-              {assistantError ? (
-                <p className="mt-3 text-[11px] text-amber-200/70">
-                  {assistantError}
-                </p>
-              ) : null}
-
-              {assistantAnswer ? (
-                <div className="mt-3 rounded-xl border border-white/[0.08] bg-white/[0.025] p-3">
-                  <p className="whitespace-pre-line text-[12px] leading-5 text-white/75">
-                    {assistantAnswer.answer}
-                  </p>
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-
-          <button
-            type="button"
-            aria-label={
-              assistantOpen
-                ? "Hide trail assistant"
-                : "Ask the trail assistant"
-            }
-            onClick={() => setAssistantOpen(!assistantOpen)}
-            className="pointer-events-auto flex items-center gap-2 rounded-full border border-sky-300/25 bg-[#0d1825]/95 px-4 py-3 text-[12px] font-semibold text-sky-100 shadow-[0_12px_32px_rgba(0,0,0,0.45)] backdrop-blur transition hover:border-sky-300/50"
-          >
-            <span
-              aria-hidden="true"
-              className="grid h-5 w-5 place-items-center rounded-full bg-sky-300/15 text-[11px]"
-            >
-              ?
-            </span>
-            {assistantOpen
-              ? "Hide assistant"
-              : "Ask about this trail"}
-          </button>
-        </div>
-      ) : null}
+      <AssistantDock
+        assistantAnswer={assistantAnswer}
+        assistantDockRef={assistantDockRef}
+        assistantError={assistantError}
+        assistantLoading={assistantLoading}
+        assistantOpen={assistantOpen}
+        assistantQuestion={assistantQuestion}
+        handleAssistantSubmit={handleAssistantSubmit}
+        selectedIntelligence={selectedIntelligence}
+        setAssistantOpen={setAssistantOpen}
+        setAssistantQuestion={setAssistantQuestion}
+      />
 
     </main>
   );
