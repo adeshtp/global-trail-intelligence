@@ -175,6 +175,14 @@ function ExplorePageContent() {
     setLoadingMore,
   ] = useState(false);
 
+  // A failed "show more" is reported next to the button. It must not replace
+  // trailError, which may be explaining a provider problem with the search
+  // itself.
+  const [
+    loadMoreError,
+    setLoadMoreError,
+  ] = useState<string | null>(null);
+
   // The most recent search, kept so "load more" continues the same query
   // instead of re-running discovery.
   const lastSearchQueryRef = useRef("");
@@ -182,6 +190,12 @@ function ExplorePageContent() {
   const lastSearchBroadRef = useRef(false);
   const lastPlaceKindRef = useRef("area");
   const lastSearchLocationRef = useRef<Location | null>(null);
+  // The bounds the search was run with. Later pages are ranked against the
+  // same area only if they are asked for it.
+  const lastSearchBoundsRef = useRef<
+    [number, number, number, number] | null
+  >(null);
+  const loadMoreAbortRef = useRef<AbortController | null>(null);
 
 
   const [
@@ -385,31 +399,46 @@ function ExplorePageContent() {
       return;
     }
 
+    // A page belongs to the search it was requested for. If a new search
+    // starts while this is in flight, its result is dropped.
+    const requestId = discoveryRequestRef.current;
+    loadMoreAbortRef.current?.abort();
+    const controller = new AbortController();
+    loadMoreAbortRef.current = controller;
+    // Paged results come from cache, so a hung connection is a stall rather
+    // than a slow provider: bound it tightly.
+    const bound = abortAfter(controller, 120000);
+    const isCurrent = () =>
+      requestId === discoveryRequestRef.current &&
+      loadMoreAbortRef.current === controller;
+
     setLoadingMore(true);
+    setLoadMoreError(null);
     const nextPage = pagination.next_page;
 
     try {
+      const params = new URLSearchParams({
+        latitude: String(
+          lastSearchLocationRef.current?.latitude ?? ""
+        ),
+        longitude: String(
+          lastSearchLocationRef.current?.longitude ?? ""
+        ),
+        search_query: lastSearchQueryRef.current,
+        location_name: lastSearchNameRef.current,
+        scope: lastSearchBroadRef.current ? "area" : "local",
+        place_kind: lastPlaceKindRef.current,
+        page: String(nextPage),
+      });
+      if (lastSearchBoundsRef.current) {
+        params.set("bbox", lastSearchBoundsRef.current.join(","));
+      }
+
       const response = await fetch(
-        `${API_BASE_URL}/api/osm/trails/discover?${new URLSearchParams(
-          {
-            latitude: String(
-              lastSearchLocationRef.current?.latitude ?? ""
-            ),
-            longitude: String(
-              lastSearchLocationRef.current?.longitude ?? ""
-            ),
-            search_query: lastSearchQueryRef.current,
-            location_name: lastSearchNameRef.current,
-            scope: lastSearchBroadRef.current ? "area" : "local",
-            place_kind: lastPlaceKindRef.current,
-            page: String(nextPage),
-          }
-        ).toString()}`,
+        `${API_BASE_URL}/api/osm/trails/discover?${params.toString()}`,
         {
           cache: "no-store",
-          // Paged results come from cache, so a hung connection is a
-          // stall rather than a slow provider: bound it tightly.
-          signal: AbortSignal.timeout(120000),
+          signal: controller.signal,
         }
       );
 
@@ -418,6 +447,9 @@ function ExplorePageContent() {
       }
 
       const data = (await response.json()) as TrailDiscoveryResponse;
+      if (!isCurrent()) {
+        return;
+      }
       const incoming = Array.isArray(data.trails) ? data.trails : [];
 
       // Append only ids we have not already shown, so repeated or reordered
@@ -449,12 +481,27 @@ function ExplorePageContent() {
       });
       setPagination(data.pagination);
       setPeakSearch(data.peak_search ?? undefined);
-    } catch {
-      setTrailError(
+    } catch (error) {
+      // Superseded by a newer search or request: nothing to report.
+      if (!isCurrent()) {
+        return;
+      }
+      if (
+        error instanceof DOMException &&
+        error.name === "AbortError" &&
+        !bound.timedOut()
+      ) {
+        return;
+      }
+      setLoadMoreError(
         "More results could not be loaded. The results already shown are unaffected."
       );
     } finally {
-      setLoadingMore(false);
+      bound.clear();
+      if (loadMoreAbortRef.current === controller) {
+        loadMoreAbortRef.current = null;
+        setLoadingMore(false);
+      }
     }
   }
 
@@ -478,6 +525,10 @@ function ExplorePageContent() {
     lastSearchBroadRef.current = broadAreaSearch;
     lastPlaceKindRef.current = placeKind;
     lastSearchLocationRef.current = newLocation;
+    lastSearchBoundsRef.current = searchBounds;
+    loadMoreAbortRef.current?.abort();
+    loadMoreAbortRef.current = null;
+    setLoadMoreError(null);
     setPagination(undefined);
     // Counts, coverage and peak context describe the response currently on
     // screen. A new search must clear them together with the trail lists:
@@ -868,8 +919,8 @@ function ExplorePageContent() {
     const sectionIds = [
       "trail-discovery",
       "trail-overview",
-      "elevation",
       "conditions",
+      "elevation",
       "suitability",
       "gear",
       "products",
@@ -900,7 +951,11 @@ function ExplorePageContent() {
           (a, b) => b[1] - a[1]
         )[0];
         if (best) {
-          setActiveSection(best[0]);
+          // The overview is part of the "Trail" group in the nav; it has no
+          // button of its own, so it highlights the button for its group.
+          setActiveSection(
+            best[0] === "trail-overview" ? "trail-discovery" : best[0]
+          );
         }
       },
       {
@@ -1259,6 +1314,7 @@ function ExplorePageContent() {
         enriching={enriching}
         handleTrailSelect={handleTrailSelect}
         loadMoreTrails={loadMoreTrails}
+        loadMoreError={loadMoreError}
         loadingMore={loadingMore}
         loadingTrails={loadingTrails}
         location={location}

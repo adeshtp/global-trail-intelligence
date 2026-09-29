@@ -10,6 +10,7 @@ type DiscoveryPanelProps = {
   coverage: { area_considered?: number[]; area_considered_source?: string; area_km2?: number; area_queried?: boolean; tiled?: boolean; tile_grid?: string | null; tiles_total?: number; tiles_queried?: number; tiles_failed?: number; tiles_skipped?: number; coverage_complete?: boolean; provider_returned_no_rows?: boolean; candidates_found?: number; candidates_accepted?: number; candidates_verified?: number; candidates_ranked?: number; candidates_returned?: number; results_truncated?: number; note?: string; } | undefined;
   enriching: boolean;
   handleTrailSelect: (trail: Trail) => void;
+  loadMoreError: string | null;
   loadMoreTrails: () => Promise<void>;
   loadingMore: boolean;
   loadingTrails: boolean;
@@ -30,6 +31,7 @@ export default function DiscoveryPanel({
   coverage,
   enriching,
   handleTrailSelect,
+  loadMoreError,
   loadMoreTrails,
   loadingMore,
   loadingTrails,
@@ -157,6 +159,12 @@ export default function DiscoveryPanel({
                   ) : pagination && pagination.total_ranked > 0 ? (
                     <p className="mt-2 text-[10px] text-white/25">
                       End of the ranked results for this search.
+                    </p>
+                  ) : null}
+
+                  {loadMoreError ? (
+                    <p className="mt-2 text-[11px] leading-5 text-amber-200/70">
+                      {loadMoreError}
                     </p>
                   ) : null}
 

@@ -25,8 +25,8 @@ export default function SectionNav({
           >
             {[
               ["trail-discovery", "Trail"],
-              ["elevation", "Elevation"],
               ["conditions", "Weather"],
+              ["elevation", "Elevation"],
               ["suitability", "Suitability"],
               ["gear", "Gear"],
               ["products", "Products"],
