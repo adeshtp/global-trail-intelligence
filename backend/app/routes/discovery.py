@@ -9,7 +9,7 @@ import os
 import re
 import time
 import unicodedata
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from dataclasses import asdict, dataclass, field
 from difflib import SequenceMatcher
 from typing import Any
@@ -1115,10 +1115,18 @@ def _distance_from_search(
     points = _geometry_points(geometry)
     if not points:
         return None
-    return min(
-        _haversine_km(latitude, longitude, point[1], point[0])
-        for point in points
-    )
+    # Only the nearest point matters, so it is found with a cheap planar
+    # comparison and measured once, exactly. A haversine per point of every
+    # candidate dominated ranking on large areas. Longitude is wrapped so a
+    # search beside the antimeridian still finds the nearer side.
+    cos_latitude = math.cos(math.radians(latitude))
+
+    def planar_squared(point: list[float]) -> float:
+        d_lon = (point[0] - longitude + 180.0) % 360.0 - 180.0
+        return (d_lon * cos_latitude) ** 2 + (point[1] - latitude) ** 2
+
+    nearest = min(points, key=planar_squared)
+    return _haversine_km(latitude, longitude, nearest[1], nearest[0])
 
 
 def _geometry_hash(geometry: dict[str, Any] | None) -> str | None:
@@ -3118,6 +3126,283 @@ async def _timed_assemble(started: float, **kwargs: Any) -> dict[str, Any]:
     return result
 
 
+# ------------------------------------------------------------
+# One search, one harvest
+# ------------------------------------------------------------
+
+# How long the rows read for a search are kept, and how many searches are kept.
+# Every page of a search, and its enrichment, ranks the same rows: without this
+# each request read the providers again, reached the time budget at a different
+# point and ranked a different set (a live Switzerland search returned 13,412,
+# 20,292 and 23,639 ranked trails for identical parameters, and each request
+# took 84-113 s). Entries can hold tens of thousands of rows, so few are kept.
+HARVEST_CACHE_TTL_SECONDS = max(
+    0.0,
+    float(os.getenv("DISCOVERY_CACHE_TTL_SECONDS", "300")),
+)
+HARVEST_CACHE_MAX_ENTRIES = max(
+    1,
+    min(int(os.getenv("DISCOVERY_CACHE_MAX_ENTRIES", "2")), 16),
+)
+
+
+@dataclass
+class _Harvest:
+    """The provider rows for one search, and how completely they were read."""
+
+    # A list of rows, or the exception the provider raised: a failed read is
+    # reported by the assembly stage as a provider failure, never as "empty".
+    relations: Any
+    ways: Any
+    tile_plan: dict[str, Any]
+
+    @property
+    def complete(self) -> bool:
+        """True only when nothing failed, so it is safe to remember."""
+        return not (
+            isinstance(self.relations, BaseException)
+            or isinstance(self.ways, BaseException)
+            or self.tile_plan.get("tiles_failed", 0)
+        )
+
+
+_HARVEST_CACHE: OrderedDict[tuple[Any, ...], tuple[float, _Harvest]] = (
+    OrderedDict()
+)
+_HARVEST_INFLIGHT: dict[tuple[Any, ...], asyncio.Task[_Harvest]] = {}
+
+
+def _harvest_key(
+    search_bbox: tuple[float, float, float, float],
+    scope: str,
+) -> tuple[Any, ...]:
+    return (
+        tuple(round(value, 5) for value in search_bbox),
+        scope,
+        AREA_RELATION_ROW_LIMIT,
+        AREA_WAY_ROW_LIMIT,
+        MAX_TILES,
+        MAX_SPLIT_QUERIES,
+        # The providers themselves, so a substituted provider never shares an
+        # entry with the real one.
+        discover_relations_in_bbox,
+        discover_named_trail_ways_in_bbox,
+    )
+
+
+def _copy_harvest(harvest: _Harvest) -> _Harvest:
+    """Same rows, own tile plan: the plan is mutated downstream."""
+    return _Harvest(
+        harvest.relations, harvest.ways, dict(harvest.tile_plan)
+    )
+
+
+async def _harvest_cached(
+    search_bbox: tuple[float, float, float, float],
+    scope: str,
+    place: str,
+    deadline: float,
+) -> _Harvest:
+    key = _harvest_key(search_bbox, scope)
+    cached = _HARVEST_CACHE.get(key)
+    if (
+        cached is not None
+        and time.monotonic() - cached[0] < HARVEST_CACHE_TTL_SECONDS
+    ):
+        _HARVEST_CACHE.move_to_end(key)
+        return _copy_harvest(cached[1])
+
+    # Identical requests at the same time share one read.
+    task = _HARVEST_INFLIGHT.get(key)
+    if task is None:
+        task = asyncio.create_task(
+            _harvest_rows(search_bbox, scope, place, deadline)
+        )
+        _HARVEST_INFLIGHT[key] = task
+    try:
+        harvest = await asyncio.shield(task)
+    finally:
+        if task.done() and _HARVEST_INFLIGHT.get(key) is task:
+            _HARVEST_INFLIGHT.pop(key, None)
+
+    if harvest.complete:
+        _HARVEST_CACHE[key] = (time.monotonic(), harvest)
+        _HARVEST_CACHE.move_to_end(key)
+        while len(_HARVEST_CACHE) > HARVEST_CACHE_MAX_ENTRIES:
+            _HARVEST_CACHE.popitem(last=False)
+    return _copy_harvest(harvest)
+
+
+async def _harvest_rows(
+    search_bbox: tuple[float, float, float, float],
+    scope: str,
+    place: str,
+    deadline: float,
+) -> _Harvest:
+    """Read the relations and named ways for a search area from Postpass."""
+    tiles, tile_plan = _tile_plan(search_bbox)
+    if len(tiles) == 1:
+        # Small area: one query for each kind, no accounting overhead.
+        limits = (
+            (AREA_RELATION_ROW_LIMIT, AREA_WAY_ROW_LIMIT)
+            if scope == "area"
+            else (200, 2000)
+        )
+        relation_task = asyncio.create_task(
+            discover_relations_in_bbox(search_bbox, limit=limits[0])
+        )
+        way_task = asyncio.create_task(
+            discover_named_trail_ways_in_bbox(search_bbox, limit=limits[1])
+        )
+        tile_plan["tiles_queried"] = 1
+        relation_result, way_result = await asyncio.gather(
+            relation_task, way_task, return_exceptions=True
+        )
+
+        # The one tile may itself be capped. Split it so a dense place is read
+        # in full, and report whatever is still cut.
+        extra = await _expand_truncated(
+            search_bbox,
+            relation_rows=(
+                None
+                if isinstance(relation_result, BaseException)
+                else relation_result
+            ),
+            way_rows=(
+                None if isinstance(way_result, BaseException) else way_result
+            ),
+            relation_limit=limits[0],
+            way_limit=limits[1],
+            budget=_QueryBudget(MAX_SPLIT_QUERIES),
+            semaphore=asyncio.Semaphore(TILE_CONCURRENCY),
+            deadline=deadline,
+        )
+        if extra.relations:
+            relation_result = _dedupe_rows(
+                [*relation_result, *extra.relations], "relation_id"
+            )
+        if extra.ways:
+            way_result = _dedupe_rows([*way_result, *extra.ways], "way_id")
+        tile_plan["rows_truncated"] = {
+            "relations": extra.relations_truncated,
+            "ways": extra.ways_truncated,
+        }
+        tile_plan["tiles_split"] = extra.splits
+        return _Harvest(relation_result, way_result, tile_plan)
+
+    per_tile_ways = max(400, AREA_WAY_ROW_LIMIT // len(tiles))
+    per_tile_relations = max(100, AREA_RELATION_ROW_LIMIT // len(tiles))
+    way_hits: list[Any] = []
+    relation_hits: list[Any] = []
+    counters = {
+        "queried": 0,
+        "failed": 0,
+        "relations_truncated": 0,
+        "ways_truncated": 0,
+        "splits": 0,
+    }
+    semaphore = asyncio.Semaphore(TILE_CONCURRENCY)
+    # Splits have their own budget, not what the grid leaves over.
+    budget = _QueryBudget(MAX_SPLIT_QUERIES)
+
+    async def _one(tile: tuple[float, float, float, float]) -> None:
+        async with semaphore:
+            # A tile that only gets a slot after the budget is spent is not
+            # queried; it is reported as skipped.
+            if time.monotonic() >= deadline:
+                return
+            way_rows, relation_rows = await asyncio.gather(
+                discover_named_trail_ways_in_bbox(tile, limit=per_tile_ways),
+                discover_relations_in_bbox(tile, limit=per_tile_relations),
+                return_exceptions=True,
+            )
+        if isinstance(way_rows, BaseException) and isinstance(
+            relation_rows, BaseException
+        ):
+            counters["failed"] += 1
+            return
+        counters["queried"] += 1
+        if not isinstance(way_rows, BaseException):
+            way_hits.extend(way_rows)
+        if not isinstance(relation_rows, BaseException):
+            relation_hits.extend(relation_rows)
+        extra = await _expand_truncated(
+            tile,
+            relation_rows=(
+                None
+                if isinstance(relation_rows, BaseException)
+                else relation_rows
+            ),
+            way_rows=(
+                None if isinstance(way_rows, BaseException) else way_rows
+            ),
+            relation_limit=per_tile_relations,
+            way_limit=per_tile_ways,
+            budget=budget,
+            semaphore=semaphore,
+            deadline=deadline,
+        )
+        way_hits.extend(extra.ways)
+        relation_hits.extend(extra.relations)
+        counters["relations_truncated"] += extra.relations_truncated
+        counters["ways_truncated"] += extra.ways_truncated
+        counters["splits"] += extra.splits
+
+    # Every tile is scheduled at once; the semaphore alone bounds how many
+    # run. Awaiting fixed batches made each batch wait for its slowest tile.
+    await asyncio.gather(*(_one(tile) for tile in tiles))
+
+    # A way or relation that crosses a tile boundary appears in two tiles. OSM
+    # identity, not position, decides identity, so the first row wins.
+    tile_plan["tiles_queried"] = counters["queried"]
+    tile_plan["tiles_failed"] = counters["failed"]
+    tile_plan["rows_truncated"] = {
+        "relations": counters["relations_truncated"],
+        "ways": counters["ways_truncated"],
+    }
+    tile_plan["tiles_split"] = counters["splits"]
+    tile_plan["tiles_skipped"] = len(tiles) - counters["queried"]
+    if tile_plan["tiles_skipped"] > 0:
+        logger.warning(
+            "Discovery coverage is incomplete for %r: %d of %d tiles were "
+            "not searched.",
+            place,
+            tile_plan["tiles_skipped"],
+            len(tiles),
+        )
+    return _Harvest(
+        _dedupe_rows(relation_hits, "relation_id"),
+        _dedupe_rows(way_hits, "way_id"),
+        tile_plan,
+    )
+
+
+def _semantic_outcome(place: str, agent_result: Any) -> TrailDiscoveryResult:
+    """The semantic layer's result, or an honest stand-in when it has none."""
+    if agent_result is None:
+        return TrailDiscoveryResult(
+            place=place,
+            trails=[],
+            agent_available=False,
+            provider="searxng+gemini",
+            provider_status="pending",
+            error=None,
+        )
+    if isinstance(agent_result, Exception):
+        logger.warning(
+            "Semantic trail discovery failed for %r: %s", place, agent_result
+        )
+        return TrailDiscoveryResult(
+            place=place,
+            trails=[],
+            agent_available=False,
+            provider="searxng+gemini",
+            provider_status="unavailable",
+            error="Semantic discovery failed",
+        )
+    return agent_result
+
+
 async def _run_discovery(
     *,
     latitude: float,
@@ -3140,6 +3425,9 @@ async def _run_discovery(
     honest UNMAPPED candidates. The full result is a superset of the
     verified-only result, so a client may render the first and then replace
     it with the second.
+
+    The Postpass rows are read once per search (``_harvest_cached``), so every
+    page and the enrichment rank the same set.
     """
     started = time.monotonic()
     deadline = started + DISCOVERY_TIME_BUDGET_SECONDS
@@ -3152,257 +3440,14 @@ async def _run_discovery(
                 longitude=longitude,
             )
         )
-    tiles, tile_plan = _tile_plan(search_bbox)
-    if len(tiles) == 1:
-        # Small area: one query, no accounting overhead.
-        relation_task = asyncio.create_task(
-            discover_relations_in_bbox(
-                search_bbox,
-                limit=AREA_RELATION_ROW_LIMIT if scope == "area" else 200,
-            )
+
+    harvest = await _harvest_cached(search_bbox, scope, place, deadline)
+
+    agent_result: Any = None
+    if agent_task is not None:
+        (agent_result,) = await asyncio.gather(
+            agent_task, return_exceptions=True
         )
-        way_task = asyncio.create_task(
-            discover_named_trail_ways_in_bbox(
-                search_bbox,
-                limit=AREA_WAY_ROW_LIMIT if scope == "area" else 2000,
-            )
-        )
-        tile_plan["tiles_queried"] = 1
-    else:
-        per_tile_ways = max(
-            400,
-            AREA_WAY_ROW_LIMIT // len(tiles),
-        )
-        per_tile_relations = max(
-            100,
-            AREA_RELATION_ROW_LIMIT // len(tiles),
-        )
-
-        async def _query_tiles() -> tuple[list[Any], list[Any], dict[str, int]]:
-            way_hits: list[Any] = []
-            relation_hits: list[Any] = []
-            counters = {
-                "queried": 0,
-                "failed": 0,
-                "skipped": 0,
-                "relations_truncated": 0,
-                "ways_truncated": 0,
-                "splits": 0,
-            }
-            semaphore = asyncio.Semaphore(TILE_CONCURRENCY)
-            # Splits have their own budget, not what the grid leaves over.
-            budget = _QueryBudget(MAX_SPLIT_QUERIES)
-
-            async def _one(
-                tile: tuple[float, float, float, float],
-            ) -> None:
-                async with semaphore:
-                    # A tile that only gets a slot after the budget is spent
-                    # is not queried; it is reported as skipped.
-                    if time.monotonic() >= deadline:
-                        return
-                    way_rows, relation_rows = await asyncio.gather(
-                        discover_named_trail_ways_in_bbox(
-                            tile,
-                            limit=per_tile_ways,
-                        ),
-                        discover_relations_in_bbox(
-                            tile,
-                            limit=per_tile_relations,
-                        ),
-                        return_exceptions=True,
-                    )
-                if isinstance(way_rows, BaseException) and isinstance(
-                    relation_rows,
-                    BaseException,
-                ):
-                    counters["failed"] += 1
-                    return
-                counters["queried"] += 1
-                if not isinstance(way_rows, BaseException):
-                    way_hits.extend(way_rows)
-                if not isinstance(relation_rows, BaseException):
-                    relation_hits.extend(relation_rows)
-                extra = await _expand_truncated(
-                    tile,
-                    relation_rows=(
-                        None
-                        if isinstance(relation_rows, BaseException)
-                        else relation_rows
-                    ),
-                    way_rows=(
-                        None
-                        if isinstance(way_rows, BaseException)
-                        else way_rows
-                    ),
-                    relation_limit=per_tile_relations,
-                    way_limit=per_tile_ways,
-                    budget=budget,
-                    semaphore=semaphore,
-                    deadline=deadline,
-                )
-                way_hits.extend(extra.ways)
-                relation_hits.extend(extra.relations)
-                counters["relations_truncated"] += extra.relations_truncated
-                counters["ways_truncated"] += extra.ways_truncated
-                counters["splits"] += extra.splits
-
-            # Every tile is scheduled at once; the semaphore alone bounds how
-            # many run. Awaiting fixed batches made each batch wait for its
-            # slowest tile.
-            await asyncio.gather(*(_one(tile) for tile in tiles))
-            return way_hits, relation_hits, counters
-
-        tiles_task = asyncio.create_task(_query_tiles())
-        relation_task = None
-        way_task = None
-        tile_results = await asyncio.gather(
-            tiles_task,
-            agent_task if agent_task is not None else asyncio.sleep(0),
-            return_exceptions=True,
-        )
-        tile_way_rows, tile_relation_rows, counters = tile_results[0]
-        agent_result = tile_results[1] if agent_task is not None else None
-
-        if isinstance(tile_way_rows, BaseException):
-            way_result = []
-        else:
-            way_result = _dedupe_rows(tile_way_rows, "way_id")
-
-        if isinstance(tile_relation_rows, BaseException):
-            relation_result = []
-        else:
-            relation_result = _dedupe_rows(tile_relation_rows, "relation_id")
-
-        tile_plan["tiles_queried"] = counters["queried"]
-        tile_plan["tiles_failed"] = counters["failed"]
-        tile_plan["rows_truncated"] = {
-            "relations": counters["relations_truncated"],
-            "ways": counters["ways_truncated"],
-        }
-        tile_plan["tiles_split"] = counters["splits"]
-        tile_plan["tiles_skipped"] = len(tiles) - counters["queried"]
-        if tile_plan["tiles_skipped"] > 0:
-            logger.warning(
-                "Discovery coverage is incomplete for %r: %d of %d tiles were "
-                "not searched.",
-                place,
-                tile_plan["tiles_skipped"],
-                len(tiles),
-            )
-
-        if agent_result is None:
-            semantic_result = TrailDiscoveryResult(
-                place=place,
-                trails=[],
-                agent_available=False,
-                provider="searxng+gemini",
-                provider_status="pending",
-                error=None,
-            )
-        elif isinstance(agent_result, Exception):
-            logger.warning(
-                "Semantic trail discovery failed for %r: %s",
-                place,
-                agent_result,
-            )
-            semantic_result = TrailDiscoveryResult(
-                place=place,
-                trails=[],
-                agent_available=False,
-                provider="searxng+gemini",
-                provider_status="unavailable",
-                error="Semantic discovery failed",
-            )
-        else:
-            semantic_result = agent_result
-
-        return await _timed_assemble(
-            started,
-            place=place,
-            scope=scope,
-            latitude=latitude,
-            longitude=longitude,
-            search_bbox=search_bbox,
-            bbox_source=bbox_source,
-            semantic_result=semantic_result,
-            relation_result=relation_result,
-            way_result=way_result,
-            include_semantic=include_semantic,
-            agent_result=agent_result,
-            tile_plan=tile_plan,
-            place_kind=place_kind,
-            page=page,
-            page_size=page_size,
-        )
-
-    pending = [
-        task
-        for task in (agent_task, relation_task, way_task)
-        if task is not None
-    ]
-    gathered = await asyncio.gather(
-        *pending,
-        return_exceptions=True,
-    )
-    results = list(gathered)
-    agent_result = results.pop(0) if agent_task is not None else None
-    relation_result, way_result = results
-
-    # The one tile may itself be capped. Split it inside the tile budget so a
-    # dense place is read in full, and report whatever is still cut.
-    single_tile_limits = (
-        (AREA_RELATION_ROW_LIMIT, AREA_WAY_ROW_LIMIT)
-        if scope == "area"
-        else (200, 2000)
-    )
-    extra = await _expand_truncated(
-        search_bbox,
-        relation_rows=(
-            None
-            if isinstance(relation_result, BaseException)
-            else relation_result
-        ),
-        way_rows=None if isinstance(way_result, BaseException) else way_result,
-        relation_limit=single_tile_limits[0],
-        way_limit=single_tile_limits[1],
-        budget=_QueryBudget(MAX_SPLIT_QUERIES),
-        semaphore=asyncio.Semaphore(TILE_CONCURRENCY),
-        deadline=deadline,
-    )
-    if extra.relations:
-        relation_result = _dedupe_rows(
-            [*relation_result, *extra.relations], "relation_id"
-        )
-    if extra.ways:
-        way_result = _dedupe_rows([*way_result, *extra.ways], "way_id")
-    tile_plan["rows_truncated"] = {
-        "relations": extra.relations_truncated,
-        "ways": extra.ways_truncated,
-    }
-    tile_plan["tiles_split"] = extra.splits
-
-    if agent_result is None:
-        semantic_result = TrailDiscoveryResult(
-            place=place,
-            trails=[],
-            agent_available=False,
-            provider="searxng+gemini",
-            provider_status="pending",
-            error=None,
-        )
-    elif isinstance(agent_result, Exception):
-        logger.warning("Semantic trail discovery failed for %r: %s", place, agent_result)
-        semantic_result = TrailDiscoveryResult(
-            place=place,
-            trails=[],
-            agent_available=False,
-            provider="searxng+gemini",
-            provider_status="unavailable",
-            error="Semantic discovery failed",
-        )
-    else:
-        semantic_result = agent_result
 
     return await _timed_assemble(
         started,
@@ -3412,17 +3457,16 @@ async def _run_discovery(
         longitude=longitude,
         search_bbox=search_bbox,
         bbox_source=bbox_source,
-        semantic_result=semantic_result,
-        relation_result=relation_result,
-        way_result=way_result,
+        semantic_result=_semantic_outcome(place, agent_result),
+        relation_result=harvest.relations,
+        way_result=harvest.ways,
         include_semantic=include_semantic,
         agent_result=agent_result,
-        tile_plan=tile_plan,
+        tile_plan=harvest.tile_plan,
         place_kind=place_kind,
         page=page,
         page_size=page_size,
     )
-
 
 
 async def _assemble_discovery_result(
