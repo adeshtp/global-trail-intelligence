@@ -1,0 +1,332 @@
+{
+  "source": {
+    "file": "/Users/adeshtp/Desktop/projectfirstversion/data/difficulty/difficulty_ways.csv",
+    "rows": 16571,
+    "unique_osm_ids": 16571
+  },
+  "terrain": {
+    "source": "Copernicus DEM GLO-90",
+    "resolution_m": 90.0,
+    "access": "public AWS COG",
+    "access_date": "2026-09-25",
+    "terrain_available_counts": {
+      "1": 11048,
+      "0": 5523
+    }
+  },
+  "target": {
+    "source_column": "sac_scale",
+    "production_column": "difficulty_class",
+    "sac_distribution": {
+      "strolling": 2500,
+      "hiking": 2500,
+      "mountain_hiking": 2500,
+      "demanding_mountain_hiking": 2500,
+      "alpine_hiking": 2500,
+      "demanding_alpine_hiking": 2500,
+      "difficult_alpine_hiking": 1571
+    },
+    "difficulty_distribution": {
+      "walking": 5000,
+      "mountain": 5000,
+      "alpine": 6571
+    }
+  },
+  "split": {
+    "column": "split_group",
+    "unique_groups": 1501
+  },
+  "features": {
+    "numeric": [
+      "length_km",
+      "mean_turn",
+      "verts_per_km",
+      "incline_pct",
+      "width_m",
+      "incline_numeric_missing",
+      "width_missing",
+      "terrain_available",
+      "elevation_gain_m",
+      "elevation_loss_m",
+      "elevation_range_m",
+      "average_slope_pct",
+      "max_slope_pct"
+    ],
+    "categorical": [
+      "highway",
+      "surface",
+      "trail_visibility",
+      "incline_direction",
+      "smoothness",
+      "tracktype",
+      "assisted_trail"
+    ]
+  },
+  "numeric_audit": {
+    "length_km": {
+      "missing": 0,
+      "non_missing": 16571,
+      "min": 0.0001353148642373,
+      "max": 59.026723886318,
+      "mean": 0.6391622519969594
+    },
+    "incline_pct": {
+      "missing": 16013,
+      "non_missing": 558,
+      "min": -1143.005230276135,
+      "max": 1378.0,
+      "mean": 18.017535332610386
+    },
+    "width_m": {
+      "missing": 14700,
+      "non_missing": 1871,
+      "min": 0.0,
+      "max": 600.0,
+      "mean": 1.9763889898450027
+    },
+    "incline_numeric_missing": {
+      "missing": 0,
+      "non_missing": 16571,
+      "min": 0.0,
+      "max": 1.0,
+      "mean": 0.9663267153460865
+    },
+    "width_missing": {
+      "missing": 0,
+      "non_missing": 16571,
+      "min": 0.0,
+      "max": 1.0,
+      "mean": 0.8870919075493332
+    },
+    "terrain_available": {
+      "missing": 0,
+      "non_missing": 16571,
+      "min": 0.0,
+      "max": 1.0,
+      "mean": 0.6667068975921792
+    },
+    "elevation_gain_m": {
+      "missing": 5523,
+      "non_missing": 11048,
+      "min": 0.0,
+      "max": 5457.2633056640625,
+      "mean": 113.53557584655287
+    },
+    "elevation_loss_m": {
+      "missing": 5523,
+      "non_missing": 11048,
+      "min": 0.0,
+      "max": 4767.95947265625,
+      "mean": 78.9418378265849
+    },
+    "elevation_range_m": {
+      "missing": 5523,
+      "non_missing": 11048,
+      "min": 0.0,
+      "max": 3740.0390625,
+      "mean": 140.5074695191406
+    },
+    "average_slope_pct": {
+      "missing": 5523,
+      "non_missing": 11048,
+      "min": 0.0,
+      "max": 199.43762447377148,
+      "mean": 21.776997187683026
+    },
+    "max_slope_pct": {
+      "missing": 5523,
+      "non_missing": 11048,
+      "min": 0.0,
+      "max": 442.09517045860986,
+      "mean": 46.20428407762405
+    },
+    "elevation_min_m": {
+      "missing": 5523,
+      "non_missing": 11048,
+      "min": -227.9255828857422,
+      "max": 8502.775390625,
+      "mean": 1253.0909715110286
+    },
+    "elevation_max_m": {
+      "missing": 5523,
+      "non_missing": 11048,
+      "min": -191.26641845703125,
+      "max": 8725.6005859375,
+      "mean": 1393.5984410301692
+    },
+    "elevation_sample_count": {
+      "missing": 5523,
+      "non_missing": 11048,
+      "min": 3.0,
+      "max": 538.0,
+      "mean": 11.697863866763216
+    },
+    "mean_turn": {
+      "missing": 0,
+      "non_missing": 16571,
+      "min": 0.0,
+      "max": 2.14861957545353,
+      "mean": 0.3259797044395347
+    },
+    "verts_per_km": {
+      "missing": 0,
+      "non_missing": 16571,
+      "min": 0.6882155954255362,
+      "max": 7430.031331368224,
+      "mean": 96.60553095523909
+    }
+  },
+  "categorical_audit": {
+    "highway": {
+      "path": 13988,
+      "track": 960,
+      "footway": 572,
+      "via_ferrata": 215,
+      "steps": 209,
+      "<MISSING>": 188,
+      "unclassified": 121,
+      "service": 72,
+      "residential": 71,
+      "cycleway": 69,
+      "tertiary": 43,
+      "ladder": 16,
+      "bridleway": 15,
+      "scramble": 11,
+      "pedestrian": 10,
+      "primary": 3,
+      "secondary": 2,
+      "mountaineering": 2,
+      "living_street": 1,
+      "climbing": 1,
+      "alpine_route": 1,
+      "yes": 1
+    },
+    "surface": {
+      "<MISSING>": 7647,
+      "ground": 3419,
+      "dirt": 1112,
+      "unpaved": 712,
+      "gravel": 539,
+      "compacted": 493,
+      "grass": 469,
+      "rock": 431,
+      "asphalt": 266,
+      "fine_gravel": 260,
+      "wood": 254,
+      "earth": 158,
+      "concrete": 102,
+      "pebblestone": 101,
+      "sand": 87,
+      "ice": 87,
+      "paving_stones": 80,
+      "paved": 41,
+      "metal": 39,
+      "stone": 28,
+      "sett": 26,
+      "mud": 23,
+      "bare_rock": 21,
+      "rocks": 17,
+      "unhewn_cobblestone": 16,
+      "grass_paver": 13,
+      "cobblestone": 13,
+      "rocky": 12,
+      "scree": 11,
+      "woodchips": 10,
+      "metal_grid": 9,
+      "snow": 9,
+      "glacier": 8,
+      "concrete:plates": 5,
+      "0.5": 5,
+      "frp_grate": 4,
+      "fibre_reinforced_polymer_grate": 3,
+      "dirt/sand": 3,
+      "iсe": 3,
+      "mixed": 2,
+      "shells": 1,
+      "tiles": 1,
+      "stepping_stones": 1,
+      "plastic": 1,
+      "concrete:lanes": 1,
+      "ground;dirt": 1,
+      "gravel;grass": 1,
+      "soil": 1,
+      "gravel;ground": 1,
+      "grass,_sand,_ground": 1,
+      "ground,_grass,_sand,_roots": 1,
+      "shingle": 1,
+      "water": 1,
+      "donejakue_bidea_(aragoiko_bidea)": 1,
+      "ground;grass": 1,
+      "ground;gravel": 1,
+      "dirt_and_rocks": 1,
+      "wood;metal": 1,
+      "natural": 1,
+      "leaf_litter": 1,
+      "terra_ghiaia": 1,
+      "mud_and_roots": 1,
+      "ghiaia_rock": 1,
+      "solid_rock": 1,
+      "ground;grass;gravel": 1,
+      "sandstone": 1,
+      "loose_rock": 1,
+      "ground; sand": 1,
+      "steel_wire": 1,
+      "talus": 1,
+      "sand/gravel/stones": 1,
+      "rock; gravel": 1,
+      "horrible_trail,_no_water,_no_shade": 1
+    },
+    "trail_visibility": {
+      "<MISSING>": 8495,
+      "good": 1941,
+      "excellent": 1631,
+      "intermediate": 1599,
+      "bad": 1372,
+      "horrible": 767,
+      "no": 724,
+      "very_bad": 18,
+      "poor": 9,
+      "medium": 6,
+      "low": 5,
+      "very_good": 1,
+      "yes": 1,
+      "buona": 1,
+      "dangerous": 1
+    },
+    "incline_direction": {
+      "<MISSING>": 14785,
+      "up": 1041,
+      "down": 481,
+      "flat": 148,
+      "steep": 82,
+      "unknown": 34
+    },
+    "smoothness": {
+      "<MISSING>": 14618,
+      "impassable": 480,
+      "bad": 441,
+      "intermediate": 408,
+      "good": 201,
+      "very_bad": 175,
+      "horrible": 107,
+      "very_horrible": 94,
+      "excellent": 45,
+      "very_good": 2
+    },
+    "tracktype": {
+      "<MISSING>": 15478,
+      "grade2": 380,
+      "grade3": 301,
+      "grade4": 173,
+      "grade5": 159,
+      "grade1": 80
+    },
+    "assisted_trail": {
+      "<MISSING>": 16381,
+      "yes": 97,
+      "no": 86,
+      "rope": 6,
+      "iron_ropes": 1
+    }
+  }
+}

@@ -6,22 +6,33 @@ __pycache__/
 
 # Environment
 .env
+.env*.local
+.env.*
+!.env.example
 
 # Next.js
 frontend/node_modules/
 frontend/.next/
 frontend/out/
 
-# Data
-data/raw/
-data/processed/
-data/dem/
+# Large generated ML datasets (reproducible from backend/app/ml).
+# Keep the small reports/audit JSON and the served artifact, but do not
+# commit bulk CSVs: the way table and the training feature table are tens of
+# megabytes and are rebuilt by `app.ml.difficulty_dataset` and
+# `app.ml.feature_engineering`.
+data/difficulty/*.csv
 
-# ML
-models/*.pkl
-models/*.joblib
-models/*.pt
-models/*.pth
+# The natural-prevalence HOLDOUT is the exception. It is small, and the
+# headline evaluation numbers are computed from it, so it is committed to keep
+# those numbers auditable. The upstream mirror is a moving snapshot, so
+# redrawing it would quietly change a published result.
+!data/difficulty/difficulty_natural_holdout.csv
+
+# Next.js regenerates these agent instruction files on `next dev`. They are
+# framework scaffolding rather than project instructions, so keep them out
+# of the diff instead of re-adding them on every run.
+frontend/AGENTS.md
+frontend/CLAUDE.md
 
 # OS
 .DS_Store

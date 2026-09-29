@@ -6,9 +6,12 @@ import {
 } from "react";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 
 export default function Home() {
+
+  const router = useRouter();
 
   const [
     query,
@@ -32,7 +35,7 @@ export default function Home() {
     }
 
 
-    window.location.assign(
+    router.push(
       `/explore?query=${encodeURIComponent(
         trimmedQuery
       )}`
@@ -86,11 +89,11 @@ export default function Home() {
                 <div>
 
                   <p className="text-sm font-semibold tracking-[0.08em]">
-                    PROJECT NAME
+                    GoBeyond
                   </p>
 
                   <p className="mt-0.5 text-[10px] uppercase tracking-[0.18em] text-white/40">
-                    Outdoor Intelligence
+                    Trail Intelligence
                   </p>
 
                 </div>
@@ -108,9 +111,17 @@ export default function Home() {
                 </Link>
 
 
-                <span className="cursor-default transition hover:text-white">
-                  About
-                </span>
+                {/*
+                  Only real destinations belong in the nav. A styled
+                  placeholder that looks clickable and does nothing is worse
+                  than no item at all.
+                */}
+                <a
+                  href="#what-you-get"
+                  className="transition hover:text-white"
+                >
+                  What you get
+                </a>
 
               </nav>
 
@@ -126,7 +137,7 @@ export default function Home() {
           <section className="flex flex-1 flex-col items-center justify-center pb-20 pt-16 text-center">
 
             <p className="mb-6 text-xs font-medium uppercase tracking-[0.28em] text-[#c8a66a] md:text-sm">
-              Outdoor Intelligence Platform
+              Verified OpenStreetMap routes
             </p>
 
 
@@ -140,8 +151,9 @@ export default function Home() {
 
 
             <p className="mt-7 max-w-xl text-base leading-7 text-white/65 md:text-[17px]">
-              Explore trails, understand terrain and
-              conditions, and prepare for what lies ahead.
+              Search a mountain, a trail or a whole region. Every route we
+              draw is checked against OpenStreetMap first, so the shape on
+              the map is the shape that is actually recorded.
             </p>
 
 
@@ -220,7 +232,10 @@ export default function Home() {
                 INFORMATION CARDS
             ========================================================== */}
 
-            <div className="mt-14 grid w-full max-w-5xl gap-4 md:grid-cols-3">
+            <div
+              id="what-you-get"
+              className="mt-14 grid w-full max-w-5xl scroll-mt-8 gap-4 md:grid-cols-3"
+            >
 
               <div className="rounded-2xl border border-white/10 bg-black/20 p-6 text-left backdrop-blur-xl">
 
@@ -290,8 +305,33 @@ export default function Home() {
               FOOTER
           ============================================================ */}
 
+          {/*
+            Attribution is a licensing requirement of OpenStreetMap, not a
+            courtesy, and it is placed on every page rather than buried in a
+            README nobody opens. The imagery and terrain credits are for the
+            sources actually used, and no ownership is claimed over any of
+            them.
+          */}
           <footer className="pb-7 text-center text-xs text-white/30">
-            Explore the outdoors with more context.
+            <a
+              href="https://www.openstreetmap.org/copyright"
+              target="_blank"
+              rel="noreferrer"
+              className="underline decoration-white/20 underline-offset-2 hover:text-white/50"
+            >
+              Trail geometry and attributes &copy; OpenStreetMap
+              contributors
+            </a>
+            {" · "}
+            <a
+              href="https://open-meteo.com/"
+              target="_blank"
+              rel="noreferrer"
+              className="underline decoration-white/20 underline-offset-2 hover:text-white/50"
+            >
+              Weather and elevation from Open-Meteo
+            </a>
+            {" · Nothing is estimated without saying so"}
           </footer>
 
         </div>

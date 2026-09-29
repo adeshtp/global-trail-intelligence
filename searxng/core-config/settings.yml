@@ -1,0 +1,13 @@
+# Read the documentation before extending the defaults:
+# https://docs.searxng.org/admin/settings/
+
+use_default_settings: true
+
+search:
+  formats:
+    - html
+    - json
+
+server:
+  secret_key: "f9fc6b9d6dceeb902fd30dd874f2fd587e387e6af416843f6df2f1354228aa59"
+  image_proxy: true

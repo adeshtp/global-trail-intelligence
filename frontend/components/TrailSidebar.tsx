@@ -1,13 +1,12 @@
 "use client";
 
 type Trail = {
-  osm_id: number;
-  osm_type:
-    | "way"
-    | "relation"
-    | "component";
+  trail_id: string;
+  osm_id: number | null;
+  osm_type: "way" | "relation" | "component" | null;
 
   name: string | null;
+  aliases?: string[];
 
   candidate_type: string;
   priority_tier: number;
@@ -15,27 +14,80 @@ type Trail = {
 
   route_type: string | null;
   highway_type: string | null;
-
   description: string | null;
 
+  source_difficulty: string | null;
   difficulty: string | null;
   surface: string | null;
+  smoothness?: string | null;
+  tracktype?: string | null;
+  incline?: string | null;
+  incline_pct?: number | null;
+  incline_direction?: string | null;
+  width?: string | null;
+  width_m?: number | null;
+  assisted_trail?: string | null;
   trail_visibility: string | null;
+  source?: string;
 
   operator: string | null;
   network: string | null;
 
-  length_km: number;
-  distance_from_search_km: number;
+  length_km: number | null;
+  distance_km?: number | null;
+  distance_from_search_km: number | null;
 
-  segment_count?: number;
-  ordered_segment_count?: number;
-
+  segment_count?: number | null;
+  ordered_segment_count?: number | null;
   member_way_ids?: number[];
+  ordered_way_ids?: number[];
+  relation_members?: Array<{
+    type: string;
+    ref: number;
+    role: string | null;
+  }>;
   osm_names?: string[];
+
+  map_ready: boolean;
+  state: "MAP_READY" | "UNMAPPED";
+  evidence_class?: "strong" | "weak" | "none";
+  unmapped_kind?: string;
+  peak_association?:
+    | "summit_route"
+    | "peak_approach"
+    | "nearby_route";
+  peak_closest_approach_m?: number;
+  relation_completeness?: {
+    member_count: number;
+    network: string | null;
+    route: string | null;
+    state: string;
+    note: string | null;
+    source_length_km: number | null;
+    basis: string;
+  };
+  geometry_resolution?: {
+    attempted: boolean;
+    sources_tried: string[];
+    names_tried: string[];
+    matched_geometry: boolean;
+    reason: string;
+  };
+  geometry: {
+    type: "LineString" | "MultiLineString";
+    coordinates: number[][] | number[][][];
+  } | null;
+  geometry_hash?: string | null;
+  geometry_provenance?: string | null;
+  evidence?: string[];
 };
 
 export type { Trail };
+
+import {
+  buildTrailGroups,
+  type TrailGroup,
+} from "./trailIdentity";
 
 type TrailSidebarProps = {
   trails: Trail[];
@@ -43,11 +95,11 @@ type TrailSidebarProps = {
 
   selectedTrail: Trail | null;
 
-  locationName?: string | null;
-
   onTrailSelect: (
     trail: Trail
   ) => void;
+
+  counts?: ResultCounts;
 };
 
 function formatDistance(
@@ -85,87 +137,20 @@ function humanize(
     );
 }
 
-function placeRouteName(
-  locationName: string | null | undefined
-): string | null {
-  if (!locationName?.trim()) {
-    return null;
-  }
-
-  const placeName =
-    locationName
-      .split(",")[0]
-      .trim();
-
-  if (!placeName) {
-    return null;
-  }
-
-  return `${placeName} Route`;
-}
-
-function trailLabel(
-  trail: Trail,
-  locationName?: string | null
-): string {
+function trailLabel(trail: Trail): string {
   if (trail.name?.trim()) {
     return trail.name.trim();
   }
 
-  if (
-    trail.candidate_type ===
-    "hiking_route"
-  ) {
-    return (
-      placeRouteName(
-        locationName
-      ) ??
-      "Hiking route"
-    );
+  if (trail.candidate_type === "trail_network") {
+    return "Connected trail network";
   }
 
-  if (
-    trail.candidate_type ===
-    "trail_network"
-  ) {
-    return (
-      placeRouteName(
-        locationName
-      ) ??
-      "Connected trail network"
-    );
+  if (trail.highway_type === "track") {
+    return "Unnamed outdoor track";
   }
 
-  if (
-    trail.candidate_type ===
-    "path_segment"
-  ) {
-    return (
-      placeRouteName(
-        locationName
-      ) ??
-      "Outdoor path"
-    );
-  }
-
-  if (
-    trail.highway_type ===
-    "track"
-  ) {
-    return (
-      placeRouteName(
-        locationName
-      ) ??
-      "Outdoor track"
-    );
-  }
-
-  return (
-    placeRouteName(
-      locationName
-    ) ??
-    "Unnamed hiking trail"
-  );
+  return "Unnamed OSM hiking route";
 }
 
 function trailType(
@@ -193,6 +178,13 @@ function trailType(
   }
 
   if (
+    trail.candidate_type ===
+    "named_local_path"
+  ) {
+    return "Named local path";
+  }
+
+  if (
     trail.highway_type ===
     "track"
   ) {
@@ -202,38 +194,98 @@ function trailType(
   return "Trail path";
 }
 
-function difficultyLabel(
+/**
+ * Map a raw OSM `sac_scale` value to a human difficulty class.
+ *
+ * `sac_scale` values are activity/technical grades, not difficulty words.
+ * Showing "hiking" under a Difficulty label is wrong: it is the route
+ * classification, not a difficulty value. This mirrors the backend
+ * SAC_TO_CLASS mapping in `backend/app/services/difficulty.py`, and it is
+ * exported so every surface in the interface renders the recorded grade the
+ * same way instead of each place inventing its own wording.
+ */
+const SAC_SCALE_TO_DIFFICULTY: Record<
+  string,
+  string
+> = {
+  strolling: "Easy",
+  hiking: "Easy",
+  mountain_hiking: "Moderate",
+  demanding_mountain_hiking: "Hard",
+  alpine_hiking: "Very Hard",
+  demanding_alpine_hiking: "Very Hard",
+  difficult_alpine_hiking: "Very Hard",
+  // An older four-level vocabulary, accepted so a value from an
+  // unrecognised producer still reads as something rather than
+  // "unknown". The model itself emits only the seven native grades.
+  easy: "Easy",
+  moderate: "Moderate",
+  hard: "Hard",
+  very_hard: "Very Hard",
+};
+
+
+export function difficultyLabel(
   difficulty: string | null
 ): string {
   if (!difficulty) {
     return "Not available";
   }
 
-  const map: Record<
-    string,
-    string
-  > = {
-    easy: "Easy",
-    moderate: "Moderate",
-    difficult: "Difficult",
-    hiking: "Hiking",
-  };
-
-  return (
-    map[
-      difficulty.toLowerCase()
-    ] ??
-    humanize(difficulty)
-  );
+  return SAC_SCALE_TO_DIFFICULTY[
+    difficulty
+      .toLowerCase()
+      .replaceAll(" ", "_")
+  ] ?? humanize(difficulty);
 }
+
+export type ResultCounts = {
+  relevance_accepted: number;
+  mapped: number;
+  unmapped: number;
+  ranked: number;
+  shown: number;
+  weak_evidence: number;
+  /**
+   * Verified trails that rank but are held back on this page. The backend
+   * reports this truthfully instead of claiming zero, so a short page is
+   * never presented as a complete result set.
+   */
+  mapped_truncated?: number;
+};
+
+/**
+ * Identity-first grouping: one verified OSM trail identity is one primary
+ * card. See `./trailIdentity` for the precedence rules. Distinct relations,
+ * distinct ways, components and unmapped candidates are never merged by
+ * name or proximity; same-named member ways of an accepted route are
+ * already folded into the route card by the backend and never arrive here
+ * as competing objects.
+ */
+
 
 export default function TrailSidebar({
   trails,
   loading,
   selectedTrail,
-  locationName,
   onTrailSelect,
+  counts,
 }: TrailSidebarProps) {
+  /*
+   * Groups are computed once and shared by the header counts and the list
+   * below, so the numbers on screen always describe the cards on screen.
+   * Identity-first: every group holds exactly one verified trail identity,
+   * so the mapped count below is a count of primary trails, not of
+   * presentation duplicates.
+   */
+  const groups: Array<TrailGroup<Trail>> = buildTrailGroups(
+    trails,
+    trailLabel
+  );
+  const mappedCount = counts
+    ? counts.mapped
+    : trails.filter((trail) => trail.map_ready).length;
+
   return (
     <aside className="flex h-full min-h-0 flex-col bg-[#0b1724]">
       <div className="shrink-0 border-b border-white/10 px-5 py-5">
@@ -251,14 +303,91 @@ export default function TrailSidebar({
           <div className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-[11px] text-white/45">
             {loading
               ? "Searching…"
-              : `${trails.length} found`}
+              : counts
+                ? `${counts.relevance_accepted} found`
+                : `${trails.length} found`}
           </div>
         </div>
 
+        {counts ? (
+          <>
+            {/*
+              Two numbers only, because they partition the total exactly.
+              Weak-evidence trails are a SUBSET of the verified ones, so
+              listing it as a third peer number made 47 look like it did not
+              add up.
+            */}
+            <div className="mt-3 grid grid-cols-2 gap-1.5">
+              {(
+                [
+                  [
+                    "On the map",
+                    mappedCount,
+                    "text-sky-200/90",
+                    "Primary routes with identity and shape checked against OpenStreetMap",
+                  ],
+                  [
+                    "No shape yet",
+                    counts.unmapped,
+                    "text-white/45",
+                    "Real trails, but no trustworthy geometry found",
+                  ],
+                ] as const
+              ).map(
+                ([label, value, tone, help]) => (
+                  <div
+                    key={label}
+                    className="rounded-lg border border-white/[0.07] bg-white/[0.02] px-2.5 py-2"
+                    title={help}
+                  >
+                    <p
+                      className={`text-[15px] font-semibold leading-none ${tone}`}
+                    >
+                      {value.toLocaleString()}
+                    </p>
+                    <p className="mt-1 text-[9px] leading-3 text-white/40">
+                      {label}
+                    </p>
+                  </div>
+                )
+              )}
+            </div>
+
+            {counts.weak_evidence > 0 ? (
+              <p className="mt-2 text-[10px] leading-4 text-amber-200/60">
+                {counts.weak_evidence} mapped section
+                {counts.weak_evidence === 1 ? "" : "s"} rely on
+                weaker hiking-tag evidence, though the route shape
+                itself is verified.
+              </p>
+            ) : null}
+
+            {/*
+              Truncation is stated rather than hidden. Without this the page
+              would quietly present a short list as though it were everything
+              the search found.
+            */}
+            {counts.mapped_truncated ? (
+              <p className="mt-2 text-[10px] leading-4 text-white/45">
+                {counts.mapped_truncated.toLocaleString()} further verified
+                trail{counts.mapped_truncated === 1 ? "" : "s"} rank
+                {counts.mapped_truncated === 1 ? "s" : ""} below this page.
+                Load more to see {counts.mapped_truncated === 1 ? "it" : "them"}.
+              </p>
+            ) : null}
+          </>
+        ) : null}
+
         <p className="mt-3 text-xs leading-5 text-white/40">
-          Available paths are ranked using the geographic
-          and OpenStreetMap evidence returned for the
-          searched area.
+          {counts
+            ? `${counts.relevance_accepted.toLocaleString()} relevant trail${
+                counts.relevance_accepted === 1 ? "" : "s"
+              } found in the searched area, of which ${mappedCount} ${
+                mappedCount === 1 ? "is" : "are"
+              } verified on the map and ${counts.unmapped} ${
+                counts.unmapped === 1 ? "is" : "are"
+              } still without verified shape yet.`
+            : "Available paths are ranked using the geographic and OpenStreetMap evidence returned for the searched area."}
         </p>
       </div>
 
@@ -298,19 +427,28 @@ export default function TrailSidebar({
           )}
 
         {!loading &&
-          trails.length > 0 && (
-            <div className="space-y-3">
-              {trails.map((trail, index) => {
+          trails.length > 0 &&
+            /*
+             * The on-screen ordinal is the ranking position of the trail
+             * identity itself, so the number on the card and the number in
+             * the map's provenance list refer to the same OSM object.
+             */
+            <div className="space-y-4">
+              {groups.map((group, index) => {
+                /*
+                 * Identity-first: each group holds exactly one verified
+                 * trail identity, rendered as its own primary card.
+                 * Distinct relations, ways, components and unmapped
+                 * candidates are never merged by name or proximity.
+                 */
+                const trail = group.primary;
                 const selected =
-                  selectedTrail?.osm_id ===
-                    trail.osm_id &&
-                  selectedTrail?.osm_type ===
-                    trail.osm_type;
-
+                  selectedTrail?.trail_id === trail.trail_id;
                 return (
                   <button
-                    key={`${trail.osm_type}-${trail.osm_id}`}
+                    key={trail.trail_id}
                     type="button"
+                    disabled={!trail.map_ready || !trail.geometry}
                     onClick={() =>
                       onTrailSelect(
                         trail
@@ -321,6 +459,9 @@ export default function TrailSidebar({
                       selected
                         ? "border-[#ff9f43]/45 bg-[#ff9f43]/[0.09] shadow-[0_12px_30px_rgba(0,0,0,0.18)]"
                         : "border-white/10 bg-white/[0.025] hover:border-white/20 hover:bg-white/[0.045]",
+                      !trail.map_ready || !trail.geometry
+                        ? "cursor-not-allowed opacity-65 hover:border-white/10 hover:bg-white/[0.025]"
+                        : "",
                     ].join(" ")}
                   >
                     <div className="flex items-start gap-3">
@@ -338,17 +479,48 @@ export default function TrailSidebar({
                       <div className="min-w-0 flex-1">
                         <div className="flex items-start justify-between gap-3">
                           <h3 className="line-clamp-2 text-sm font-semibold leading-5 text-white">
-                            {trailLabel(
-                              trail,
-                              locationName
-                            )}
+                            {/*
+                              The card carries the real trail name plus its
+                              authoritative OSM identity, so provenance is
+                              visible without a second competing card.
+                            */}
+                            {trailLabel(trail)}
+                            <span className="mt-0.5 block text-[10px] font-normal leading-4 text-white/35">
+                              {trailType(trail)}
+                              {trail.osm_type
+                                ? ` · OSM ${
+                                    trail.osm_type === "relation"
+                                      ? "relation"
+                                      : trail.osm_type === "component"
+                                        ? "connected component"
+                                        : "way"
+                                  }${trail.osm_id == null ? "" : ` ${trail.osm_id}`}`
+                                : ""}
+                            </span>
                           </h3>
 
-                          {selected && (
+                          {selected ? (
                             <span className="shrink-0 rounded-full bg-[#ff9f43]/15 px-2 py-1 text-[9px] font-medium uppercase tracking-[0.12em] text-[#ffb66d]">
                               Selected
                             </span>
-                          )}
+                          ) : trail.state === "UNMAPPED" ? (
+                            <span
+                              className="shrink-0 rounded-full border border-white/10 bg-white/[0.04] px-2 py-1 text-[9px] font-medium uppercase tracking-[0.12em] text-white/40"
+                              title={
+                                trail.geometry_resolution?.reason ??
+                                "Named externally but no verified OpenStreetMap geometry was found"
+                              }
+                            >
+                              Unmapped
+                            </span>
+                          ) : trail.evidence_class === "weak" ? (
+                            <span
+                              className="shrink-0 rounded-full border border-amber-300/20 bg-amber-300/[0.07] px-2 py-1 text-[9px] font-medium uppercase tracking-[0.12em] text-amber-200/80"
+                              title="Real verified geometry, but the OSM tags give weak hiking evidence"
+                            >
+                              Weak evidence
+                            </span>
+                          ) : null}
                         </div>
 
                         <div className="mt-2 flex flex-wrap gap-2 text-[10px] text-white/40">
@@ -391,6 +563,11 @@ export default function TrailSidebar({
                                 trail.difficulty
                               )}
                             </p>
+                            {trail.difficulty ? (
+                              <p className="mt-0.5 text-[9px] text-white/25">
+                                Official OSM scale
+                              </p>
+                            ) : null}
                           </div>
 
                           <div className="rounded-xl border border-white/[0.07] bg-black/10 px-3 py-2.5">
@@ -409,6 +586,42 @@ export default function TrailSidebar({
                           trail.network ||
                           trail.operator) && (
                           <div className="mt-3 flex flex-wrap gap-2">
+                            {trail.peak_association ? (
+                              <span
+                                className={`rounded-full border px-2.5 py-1 text-[9px] ${
+                                  trail.peak_association ===
+                                  "summit_route"
+                                    ? "border-sky-300/30 bg-sky-300/10 text-sky-200"
+                                    : trail.peak_association ===
+                                        "peak_approach"
+                                      ? "border-white/15 bg-white/[0.05] text-white/60"
+                                      : "border-white/10 bg-white/[0.03] text-white/35"
+                                }`}
+                                title={
+                                  trail.peak_closest_approach_m != null
+                                    ? `Closest approach to the searched summit: ${
+                                        Math.round(
+                                          trail.peak_closest_approach_m
+                                        )
+                                      } m, measured on the route geometry`
+                                    : undefined
+                                }
+                              >
+                                {trail.peak_association ===
+                                "summit_route"
+                                  ? "Reaches the summit"
+                                  : trail.peak_association ===
+                                      "peak_approach"
+                                    ? "Approaches the summit"
+                                    : "In the surrounding area"}
+                                {trail.peak_closest_approach_m != null
+                                  ? ` · ${(
+                                      trail.peak_closest_approach_m /
+                                      1000
+                                    ).toFixed(1)} km away`
+                                  : ""}
+                              </span>
+                            ) : null}
                             {trail.surface && (
                               <span className="rounded-full border border-white/10 bg-white/[0.035] px-2.5 py-1 text-[9px] text-white/35">
                                 {humanize(
@@ -439,7 +652,7 @@ export default function TrailSidebar({
                 );
               })}
             </div>
-          )}
+          }
       </div>
 
       <div className="shrink-0 border-t border-white/10 px-5 py-4">

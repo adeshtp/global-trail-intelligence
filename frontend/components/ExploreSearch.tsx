@@ -9,7 +9,7 @@ import {
 
 
 const API_BASE_URL =
-  "http://127.0.0.1:8000";
+  process.env.NEXT_PUBLIC_API_BASE_URL ?? "";
 
 
 type Location = {
@@ -19,16 +19,17 @@ type Location = {
 
 
 type LocationResult = {
+  name?: string;
   display_name: string;
   latitude: number;
   longitude: number;
+  boundingbox?: [number, number, number, number] | null;
 
   /*
    * These fields come from the geocoding result when available.
-   * They let the Explore page distinguish:
-   *
-   *   Munnar        -> broad place search
-   *   Meesapulimala -> specific outdoor feature search
+   * They let the Explore page distinguish a populated place, which is searched
+   * as a broad area, from a specific outdoor feature such as a summit, which
+   * is searched as a point with peak association enabled.
    */
   osm_type?: string;
   osm_id?: number;
@@ -51,7 +52,9 @@ type ExploreSearchProps = {
     location: Location,
     locationName: string,
     searchQuery: string,
-    broadAreaSearch: boolean
+    broadAreaSearch: boolean,
+    searchBounds: [number, number, number, number] | null,
+    placeKind: string
   ) => void;
 };
 
@@ -113,6 +116,9 @@ function isBroadAreaResult(
       "country",
       "region",
       "district",
+      "administrative",
+      "state_district",
+      "province",
       "borough",
       "suburb",
       "neighbourhood",
@@ -223,6 +229,49 @@ function isBroadAreaResult(
 
 
   return false;
+}
+
+
+function getAdministrativeSearchBounds(
+  result: LocationResult
+): [number, number, number, number] | null {
+  const type = normalizeText(result.type ?? "");
+  const addressType = normalizeText(result.addresstype ?? "");
+  const administrativeTypes = new Set([
+    "administrative",
+    "state_district",
+    "district",
+    "county",
+    "province",
+    "state",
+    "region",
+  ]);
+
+  if (
+    !administrativeTypes.has(type) &&
+    !administrativeTypes.has(addressType)
+  ) {
+    return null;
+  }
+
+  const bounds = result.boundingbox;
+  if (
+    !Array.isArray(bounds) ||
+    bounds.length !== 4
+  ) {
+    return null;
+  }
+
+  const [west, south, east, north] = bounds.map(Number);
+  if (
+    ![west, south, east, north].every(Number.isFinite) ||
+    west >= east ||
+    south >= north
+  ) {
+    return null;
+  }
+
+  return [west, south, east, north];
 }
 
 
@@ -601,7 +650,22 @@ export default function ExploreSearch({
         },
         result.display_name,
         query,
+        broadAreaSearch,
         broadAreaSearch
+          ? getAdministrativeSearchBounds(result)
+          : null,
+        /*
+         * The geocoder's own classification. Passing it through lets the
+         * backend recognise a summit search in any language, without a
+         * hardcoded list of place names.
+         */
+        [
+          result.class ?? "",
+          result.type ?? "",
+          result.addresstype ?? "",
+        ]
+          .filter(Boolean)
+          .join("=")
       );
 
     } catch (
@@ -675,7 +739,7 @@ export default function ExploreSearch({
    *
    * Example:
    *
-   *   /explore?query=Munnar
+   *   /explore?query=<place name>
    *
    * The Explore page receives initialQuery
    * and automatically performs the search.
@@ -722,13 +786,13 @@ export default function ExploreSearch({
       query
     );
 
-    /*
-     * Intentionally no cleanup here.
-     *
-     * Aborting here can cancel the automatic
-     * landing-page search during development
-     * Strict Mode.
-     */
+    return () => {
+      requestRef.current?.abort();
+      requestRef.current = null;
+      if (automaticSearchRef.current === query) {
+        automaticSearchRef.current = null;
+      }
+    };
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
