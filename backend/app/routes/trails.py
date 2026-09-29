@@ -725,10 +725,25 @@ async def get_selected_trail_intelligence(
             detail="Selected geometry has no representative midpoint",
         )
 
-    # Elevation is read first because it says where along the route the
-    # weather should be read: start, highest, lowest, end and middle, each at
-    # its own height. A route with only one distinct place on it, or with no
-    # profile, is weathered at its midpoint as before.
+    # Elevation says where along the route the weather should be read: start,
+    # highest, lowest, end and middle, each at its own height. A route with only
+    # one distinct place on it, or with no profile, is weathered at its
+    # midpoint as before.
+    #
+    # The midpoint reading is started alongside elevation rather than after it,
+    # so a hung provider is waited on once and not twice (measured 50 s
+    # against 30 s). It is a cheap, cached call, and it is dropped when the
+    # route has real points to read.
+    midpoint_weather = asyncio.create_task(
+        get_weather(
+            latitude=midpoint[1],
+            longitude=midpoint[0],
+        )
+    )
+    # A dropped or failed fallback must not log "exception never retrieved".
+    midpoint_weather.add_done_callback(
+        lambda task: None if task.cancelled() else task.exception()
+    )
     (elevation_result,) = await asyncio.gather(
         get_elevation_profile(analysis["geometry"]),
         return_exceptions=True,
@@ -740,12 +755,10 @@ async def get_selected_trail_intelligence(
     )
     try:
         if len(route_points) > 1:
+            midpoint_weather.cancel()
             weather_result = await get_route_weather(route_points)
         else:
-            weather_result = await get_weather(
-                latitude=midpoint[1],
-                longitude=midpoint[0],
-            )
+            weather_result = await midpoint_weather
     except Exception as exc:
         weather_result = exc
 

@@ -10,6 +10,8 @@ from typing import Any
 import httpx
 from fastapi import HTTPException
 
+from app.services.rate_limit import is_provider_outage, open_meteo_breaker
+
 
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 WEATHER_CACHE_TTL_SECONDS = max(
@@ -272,6 +274,12 @@ async def _fetch_weather_uncached(
         "forecast_days": 1,
         "timezone": "auto",
     }
+    # One breaker for the whole Open-Meteo host, shared with elevation.
+    if not open_meteo_breaker.allow():
+        raise HTTPException(
+            status_code=502,
+            detail="Weather service is temporarily unavailable",
+        )
     try:
         transport = httpx.AsyncHTTPTransport(retries=1)
         async with httpx.AsyncClient(
@@ -292,8 +300,15 @@ async def _fetch_weather_uncached(
             data = response.json()
         if not isinstance(data, dict):
             raise ValueError("Open-Meteo returned an invalid response")
-        return normalize_weather_response(data)
+        result = normalize_weather_response(data)
+        open_meteo_breaker.record_success()
+        return result
     except (httpx.HTTPError, ValueError, TypeError) as exc:
+        if is_provider_outage(exc):
+            open_meteo_breaker.record_failure()
+        else:
+            # The host answered, even if not usefully.
+            open_meteo_breaker.record_success()
         raise HTTPException(
             status_code=502,
             detail="Weather service is temporarily unavailable",
@@ -538,6 +553,12 @@ async def _fetch_route_weather_uncached(
         "forecast_days": 1,
         "timezone": "auto",
     }
+    # One breaker for the whole Open-Meteo host, shared with elevation.
+    if not open_meteo_breaker.allow():
+        raise HTTPException(
+            status_code=502,
+            detail="Weather service is temporarily unavailable",
+        )
     try:
         transport = httpx.AsyncHTTPTransport(retries=1)
         async with httpx.AsyncClient(
@@ -559,8 +580,15 @@ async def _fetch_route_weather_uncached(
         ]
         if not readings:
             raise ValueError("Open-Meteo returned no usable locations")
-        return aggregate_route_weather(readings)
+        result = aggregate_route_weather(readings)
+        open_meteo_breaker.record_success()
+        return result
     except (httpx.HTTPError, ValueError, TypeError) as exc:
+        if is_provider_outage(exc):
+            open_meteo_breaker.record_failure()
+        else:
+            # The host answered, even if not usefully.
+            open_meteo_breaker.record_success()
         raise HTTPException(
             status_code=502,
             detail="Weather service is temporarily unavailable",

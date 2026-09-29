@@ -199,7 +199,7 @@ class NominatimRetryTests(unittest.TestCase):
             }
         ]
         outcomes = [
-            lambda: (_ for _ in ()).throw(httpx.ReadTimeout("slow")),
+            lambda: (_ for _ in ()).throw(httpx.ConnectError("dropped")),
             lambda: type(
                 "R",
                 (),

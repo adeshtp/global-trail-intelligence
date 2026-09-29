@@ -4,6 +4,8 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable
 
+import httpx
+
 
 class FixedWindowRateLimiter:
     """Small process-local limiter for expensive public enrichment endpoints."""
@@ -46,6 +48,23 @@ class ProviderOutage(RuntimeError):
     an outage says anything about whether the provider is available, so only
     an outage counts towards opening a ``CircuitBreaker``.
     """
+
+
+def is_provider_outage(exc: BaseException) -> bool:
+    """
+    True when a failure says the provider is not serving us.
+
+    A dropped or timed-out connection, a server error, or throttling counts. A
+    request the provider understood and refused (a 4xx) and a body that could
+    not be parsed do not: the server answered, so nothing about its
+    availability has changed.
+    """
+    if isinstance(exc, httpx.TransportError):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        return status >= 500 or status == 429
+    return False
 
 
 class CircuitBreaker:
@@ -95,6 +114,10 @@ class CircuitBreaker:
         if self._failures >= self.failure_threshold:
             self._open_until = self._clock() + self.cooldown_seconds
 
+
+# One breaker for the whole Open-Meteo host: elevation and weather are both
+# read from it, one after the other, so a hung host must not be paid for twice.
+open_meteo_breaker = CircuitBreaker("open-meteo")
 
 discovery_limiter = FixedWindowRateLimiter()
 search_limiter = FixedWindowRateLimiter()

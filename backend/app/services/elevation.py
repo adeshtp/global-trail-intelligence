@@ -12,6 +12,8 @@ from typing import Any
 import httpx
 from fastapi import HTTPException
 
+from app.services.rate_limit import is_provider_outage, open_meteo_breaker
+
 
 OPEN_METEO_ELEVATION_URL = "https://api.open-meteo.com/v1/elevation"
 MAX_PROFILE_POINTS = max(
@@ -505,6 +507,12 @@ async def _fetch_elevation_uncached(
             str(coordinate[0]) for coordinate in sampled_coordinates
         ),
     }
+    # One breaker for the whole Open-Meteo host, shared with weather.
+    if not open_meteo_breaker.allow():
+        raise HTTPException(
+            status_code=502,
+            detail="Elevation service is temporarily unavailable",
+        )
     try:
         transport = httpx.AsyncHTTPTransport(retries=1)
         async with httpx.AsyncClient(
@@ -524,10 +532,15 @@ async def _fetch_elevation_uncached(
             response.raise_for_status()
             data = response.json()
     except (httpx.HTTPError, ValueError, TypeError) as exc:
+        if is_provider_outage(exc):
+            open_meteo_breaker.record_failure()
+        else:
+            open_meteo_breaker.record_success()
         raise HTTPException(
             status_code=502,
             detail="Elevation service is temporarily unavailable",
         ) from exc
+    open_meteo_breaker.record_success()
 
     provider_elevations = data.get("elevation") if isinstance(data, dict) else None
     if not isinstance(provider_elevations, list):

@@ -8,7 +8,11 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from app.services.rate_limit import search_limiter
+from app.services.rate_limit import (
+    CircuitBreaker,
+    is_provider_outage,
+    search_limiter,
+)
 
 
 router = APIRouter(
@@ -23,6 +27,9 @@ SEARCH_CACHE_MAX_ENTRIES = 128
 HEADERS = {
     "User-Agent": "GoBeyond/1.0 (outdoor trail intelligence)",
 }
+
+# Repeated outages stop each keystroke-driven search waiting out a timeout.
+nominatim_breaker = CircuitBreaker("nominatim")
 
 _SEARCH_CACHE: OrderedDict[str, tuple[float, dict[str, Any]]] = OrderedDict()
 _SEARCH_INFLIGHT: dict[str, asyncio.Task[dict[str, Any]]] = {}
@@ -74,10 +81,17 @@ async def _search_uncached(query: str) -> dict[str, Any]:
         "namedetails": 1,
     }
 
-    # One retry for a transient failure only (a timeout, a dropped connection
-    # or a server error), so a single blip does not fail the search box.
-    # Nominatim's usage policy is strict, so a refusal such as 429 is never
-    # retried and there is never more than the one extra request.
+    if not nominatim_breaker.allow():
+        raise RuntimeError(
+            "Nominatim search is temporarily skipped after repeated failures"
+        )
+
+    # One retry for a transient failure only (a dropped connection or a server
+    # error), so a single blip does not fail the search box. A timeout is not
+    # retried: a hung host does not answer on an immediate second try, and
+    # retrying doubled the wait (10 s became 21 s). Nominatim's usage policy is
+    # strict, so a refusal such as 429 is never retried and there is never more
+    # than the one extra request.
     for attempt in (0, 1):
         try:
             async with httpx.AsyncClient(
@@ -93,14 +107,23 @@ async def _search_uncached(query: str) -> dict[str, Any]:
                 payload = response.json()
             break
         except (httpx.HTTPError, ValueError) as exc:
-            transient = isinstance(exc, httpx.TransportError) or (
+            transient = (
+                isinstance(exc, httpx.TransportError)
+                and not isinstance(exc, httpx.TimeoutException)
+            ) or (
                 isinstance(exc, httpx.HTTPStatusError)
                 and exc.response.status_code >= 500
             )
             if attempt == 0 and transient:
                 await asyncio.sleep(1.0)
                 continue
+            if is_provider_outage(exc):
+                nominatim_breaker.record_failure()
+            else:
+                # The server answered, even if not usefully.
+                nominatim_breaker.record_success()
             raise RuntimeError("Nominatim search failed") from exc
+    nominatim_breaker.record_success()
 
     if not isinstance(payload, list):
         raise RuntimeError("Nominatim returned an invalid result")

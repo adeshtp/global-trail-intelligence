@@ -12,6 +12,7 @@ from urllib.parse import quote_plus, urlsplit
 import httpx
 
 from app.core.config import settings
+from app.services.rate_limit import CircuitBreaker, is_provider_outage
 
 
 logger = logging.getLogger(__name__)
@@ -679,6 +680,12 @@ def _cache_set(key: str, value: dict[str, Any]) -> None:
         _CACHE.popitem(last=False)
 
 
+# Opens after consecutive outage failures. A product request searches once per
+# gear item, so a hung provider otherwise costs a full timeout for each wave of
+# items, on every request (60 s measured).
+tavily_breaker = CircuitBreaker("tavily")
+
+
 async def _search_web(
     query: str,
 ) -> tuple[list[dict[str, Any]], list[str], str | None]:
@@ -688,6 +695,8 @@ async def _search_web(
     ).strip()
     if not api_key:
         return [], [], "Product search is not configured"
+    if not tavily_breaker.allow():
+        return [], [], "Product search is temporarily unavailable"
 
     try:
         transport = httpx.AsyncHTTPTransport(retries=1)
@@ -717,8 +726,14 @@ async def _search_web(
             )
             response.raise_for_status()
             payload = response.json()
-    except (httpx.HTTPError, ValueError, TypeError):
+    except (httpx.HTTPError, ValueError, TypeError) as exc:
+        if is_provider_outage(exc):
+            tavily_breaker.record_failure()
+        else:
+            # The provider answered, even if it refused this request.
+            tavily_breaker.record_success()
         return [], [], "Product search is temporarily unavailable"
+    tavily_breaker.record_success()
 
     raw_results = payload.get("results") if isinstance(payload, dict) else None
     if not isinstance(raw_results, list):

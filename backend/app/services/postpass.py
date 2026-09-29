@@ -449,6 +449,14 @@ async def _execute_sql_request(
                 )
         except Exception as exc:
             last_error = f"Postpass request failed: {exc}"
+            # A timeout is not retried. A hung public host does not answer on
+            # an immediate second try (a hang cost 3 x 30 s), and the Overpass
+            # fallback is the better use of the time.
+            if isinstance(exc, httpx.TimeoutException):
+                raise ProviderOutage(
+                    f"Postpass timed out after "
+                    f"{POSTPASS_TIMEOUT_SECONDS:g} s"
+                ) from exc
             if attempt < POSTPASS_SERVER_RETRIES:
                 await asyncio.sleep(
                     POSTPASS_SERVER_BACKOFF_SECONDS * (attempt + 1)

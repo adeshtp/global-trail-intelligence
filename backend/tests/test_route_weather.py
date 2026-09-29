@@ -329,7 +329,8 @@ class IntelligenceUsesRouteWeatherTests(unittest.TestCase):
                 )
             )
         route_weather.assert_awaited_once()
-        single.assert_not_awaited()
+        # The midpoint reading is started alongside elevation as a fallback and
+        # is not used once the route has real points to read.
         self.assertEqual(payload["weather"]["current"]["temperature"], -3.0)
         self.assertEqual(len(payload["weather_samples"]), 2)
         basis = payload["weather_coordinate"]["basis"].lower()
@@ -337,6 +338,107 @@ class IntelligenceUsesRouteWeatherTests(unittest.TestCase):
         self.assertIn("worst case", basis)
         needs = {item["need"] for item in payload["gear"]["items"]}
         self.assertTrue(needs & {"thermal_layer", "insulation"})
+
+
+class ParallelFetchTests(unittest.TestCase):
+    """
+    Elevation says where to read the weather, but a hung provider must not be
+    waited on twice: measured 50 s for elevation then weather, against 30 s when
+    they ran together.
+    """
+
+    def _way(self):
+        from app.services import postpass
+
+        return postpass.PostpassWay(
+            way_id=7, name="Col Route", route=None, highway="path",
+            sac_scale="mountain_hiking", trail_visibility=None, surface=None,
+            smoothness=None, tracktype=None, access=None, incline=None,
+            incline_direction=None, width=None, assisted_trail=None,
+            aliases=[], geometry_type="LineString", point_count=2,
+            length_km=1.0,
+            geometry={"type": "LineString", "coordinates": [[6.87, 45.9], [6.88, 45.91]]},
+        )
+
+    def test_a_slow_failing_provider_is_waited_on_once_not_twice(self) -> None:
+        import time
+
+        async def slow_failure(*args, **kwargs):
+            await asyncio.sleep(0.4)
+            raise RuntimeError("provider hung")
+
+        async def instant_failure(*args, **kwargs):
+            raise RuntimeError("provider down")
+
+        way = self._way()
+        request = trails.TrailIntelligenceRequest(
+            trail={
+                "osm_type": "way",
+                "osm_id": 7,
+                "map_ready": True,
+                "geometry": way.geometry,
+            }
+        )
+        # Warm the difficulty model so its one-off load is not timed.
+        with patch.object(
+            trails, "get_way", new=AsyncMock(return_value=way)
+        ), patch.object(
+            trails, "get_elevation_profile", new=instant_failure
+        ), patch.object(trails, "get_weather", new=instant_failure):
+            asyncio.run(trails.get_selected_trail_intelligence(request))
+
+        with patch.object(
+            trails, "get_way", new=AsyncMock(return_value=way)
+        ), patch.object(
+            trails, "get_elevation_profile", new=slow_failure
+        ), patch.object(trails, "get_weather", new=slow_failure):
+            started = time.perf_counter()
+            payload = asyncio.run(
+                trails.get_selected_trail_intelligence(request)
+            )
+            elapsed = time.perf_counter() - started
+        self.assertEqual(
+            payload["providers"],
+            {"weather": "unavailable", "elevation": "unavailable"},
+        )
+        self.assertLess(elapsed, 0.7)
+
+    def test_a_working_provider_still_uses_route_weather_once(self) -> None:
+        merged = weather.aggregate_route_weather(
+            [
+                ({"labels": ["start"], "latitude": 45.9, "longitude": 6.87,
+                  "elevation_m": 1500.0}, _sample(15.0, 3.0)),
+                ({"labels": ["highest"], "latitude": 45.94, "longitude": 6.87,
+                  "elevation_m": 3000.0}, _sample(-3.0, 35.0)),
+            ]
+        )
+        terrain = {"source": "Open-Meteo", "profile": PROFILE,
+                   "metrics": {"max_elevation_m": 3000.0}}
+        way = self._way()
+        route_weather = AsyncMock(return_value=merged)
+        with patch.object(
+            trails, "get_way", new=AsyncMock(return_value=way)
+        ), patch.object(
+            trails, "get_elevation_profile", new=AsyncMock(return_value=terrain)
+        ), patch.object(
+            trails, "get_route_weather", new=route_weather
+        ), patch.object(
+            trails, "get_weather", new=AsyncMock(return_value=_sample(15.0, 3.0))
+        ):
+            payload = asyncio.run(
+                trails.get_selected_trail_intelligence(
+                    trails.TrailIntelligenceRequest(
+                        trail={
+                            "osm_type": "way",
+                            "osm_id": 7,
+                            "map_ready": True,
+                            "geometry": way.geometry,
+                        }
+                    )
+                )
+            )
+        route_weather.assert_awaited_once()
+        self.assertEqual(payload["weather"]["aggregation"], "worst_case")
 
 
 if __name__ == "__main__":
