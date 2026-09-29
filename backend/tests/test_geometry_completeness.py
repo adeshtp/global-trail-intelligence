@@ -85,6 +85,55 @@ class MeasureGapsTests(unittest.TestCase):
         self.assertIn("separate", result.note.lower())
 
 
+class MeasureCostTests(unittest.TestCase):
+    """
+    A live Chamonix page spent 7 s here: Via Francigena alone has 1,380 raw
+    pieces and every pair of pieces was compared.
+    """
+
+    def test_a_long_route_of_touching_pieces_is_cheap(self) -> None:
+        import time
+
+        parts = [_line(i * 100, i * 100 + 100) for i in range(3000)]
+        started = time.perf_counter()
+        result = measure_geometry_completeness(parts)
+        self.assertLess(time.perf_counter() - started, 0.5)
+        self.assertEqual(result.chain_count, 1)
+        self.assertEqual(result.status, "connected")
+
+    def test_a_huge_scattered_network_is_cheap_and_says_gaps_are_unmeasured(
+        self,
+    ) -> None:
+        import random
+        import time
+
+        random.seed(7)
+        parts = []
+        for _ in range(1500):
+            lon = LON + random.random() * 0.5
+            lat = LAT + random.random() * 0.4
+            parts.append([[lon, lat], [lon + 0.003, lat + 0.003]])
+        started = time.perf_counter()
+        result = measure_geometry_completeness(parts)
+        self.assertLess(time.perf_counter() - started, 1.0)
+        self.assertEqual(result.status, "separate_pieces")
+        self.assertIsNone(result.largest_gap_km)
+        self.assertIn("not measured", result.note.lower())
+
+    def test_the_fast_distance_agrees_with_haversine(self) -> None:
+        from app.services import overpass
+        from app.services.postpass import _end_distance_km
+
+        for lat in (0.0, 46.0, 60.0):
+            for km in (0.01, 0.5, 5.0, 50.0):
+                first = [6.87, lat]
+                second = [6.87 + km / 111.195, lat + km / 222.39]
+                exact = overpass._haversine_km(*first, *second)
+                self.assertAlmostEqual(
+                    _end_distance_km(first, second), exact, delta=exact * 0.01
+                )
+
+
 class AnalysisReportsCompletenessTests(unittest.TestCase):
     def _geometry(self, *parts: list[list[float]]) -> dict:
         return {"type": "MultiLineString", "coordinates": list(parts)}

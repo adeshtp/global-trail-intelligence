@@ -1081,6 +1081,12 @@ CONNECTED_TOLERANCE_KM = 0.025
 # the pieces are separate paths rather than one route with holes in it.
 SEPARATE_GAP_KM = 2.0
 DOMINANT_CHAIN_SHARE = 0.5
+# Past this many separate chains the gaps are not worth computing: it is a
+# scattered network of paths, and the answer would cost seconds to state.
+MAX_CHAINS_FOR_GAP_TREE = 250
+_KM_PER_DEGREE = 111.195
+# Grid cell for finding line ends that nearly touch, in degrees of latitude.
+_GRID_CELL_DEGREES = 0.0005
 
 
 @dataclass(frozen=True)
@@ -1092,21 +1098,31 @@ class GeometryCompleteness:
     ``CONNECTED_TOLERANCE_KM``. ``total_gap_km`` is the shortest distance that
     would have to be added to make them one line and ``largest_gap_km`` the
     biggest single hole in that. Both are measurements of what is missing,
-    never geometry: no coordinate is added or moved.
+    never geometry: no coordinate is added or moved. They are ``None`` when a
+    network has too many separate chains for the gaps to be measured.
     """
 
     status: str  # "connected" | "gaps" | "separate_pieces"
     part_count: int
     chain_count: int
-    largest_gap_km: float
-    total_gap_km: float
+    largest_gap_km: float | None
+    total_gap_km: float | None
     main_chain_share: float
     note: str | None
 
 
 def _end_distance_km(first: list[float], second: list[float]) -> float:
-    return overpass_fallback._haversine_km(
-        first[0], first[1], second[0], second[1]
+    """
+    Distance between two points, on a flat local approximation.
+
+    Within a few tens of kilometres this agrees with haversine to well under
+    1%, and it avoids the trigonometry that dominated the cost of comparing
+    thousands of line ends.
+    """
+    mean_latitude = math.radians((first[1] + second[1]) / 2.0)
+    return math.hypot(
+        (second[0] - first[0]) * math.cos(mean_latitude) * _KM_PER_DEGREE,
+        (second[1] - first[1]) * _KM_PER_DEGREE,
     )
 
 
@@ -1122,20 +1138,22 @@ def measure_geometry_completeness(
     distances), which is the least that is missing from the map.
     """
     lines = [line for line in parts if len(line) >= 2]
-    if len(lines) <= 1:
+
+    def connected(count: int) -> GeometryCompleteness:
         return GeometryCompleteness(
             status="connected",
-            part_count=len(lines),
-            chain_count=len(lines),
+            part_count=count,
+            chain_count=min(count, 1),
             largest_gap_km=0.0,
             total_gap_km=0.0,
             main_chain_share=1.0,
             note=None,
         )
 
-    ends = [(line[0], line[-1]) for line in lines]
-    lengths = [overpass_fallback._line_length_km(line) for line in lines]
+    if len(lines) <= 1:
+        return connected(len(lines))
 
+    ends = [(line[0], line[-1]) for line in lines]
     parent = list(range(len(lines)))
 
     def find(index: int) -> int:
@@ -1144,39 +1162,71 @@ def measure_geometry_completeness(
             index = parent[index]
         return index
 
-    for i in range(len(lines)):
-        for j in range(i + 1, len(lines)):
-            if find(i) == find(j):
-                continue
-            if any(
-                _end_distance_km(a, b) <= CONNECTED_TOLERANCE_KM
-                for a in ends[i]
-                for b in ends[j]
-            ):
-                parent[find(j)] = find(i)
+    # Ends are bucketed on a grid so only neighbouring ends are compared,
+    # instead of every piece against every other. A grid cell is widened in
+    # longitude so it is never narrower than the tolerance at this latitude.
+    cell_lat = _GRID_CELL_DEGREES
+    cell_lon = cell_lat / max(0.2, math.cos(math.radians(lines[0][0][1])))
+    grid: dict[tuple[int, int], list[tuple[int, int, list[float]]]] = {}
+    touching: set[tuple[int, int]] = set()
+    for index, pair in enumerate(ends):
+        for side, point in enumerate(pair):
+            cell = (int(point[0] // cell_lon), int(point[1] // cell_lat))
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    for other, other_side, other_point in grid.get(
+                        (cell[0] + dx, cell[1] + dy), ()
+                    ):
+                        if other == index:
+                            continue
+                        if (
+                            _end_distance_km(point, other_point)
+                            <= CONNECTED_TOLERANCE_KM
+                        ):
+                            touching.add((index, side))
+                            touching.add((other, other_side))
+                            if find(index) != find(other):
+                                parent[find(other)] = find(index)
+            grid.setdefault(cell, []).append((index, side, point))
 
     chains: dict[int, list[int]] = {}
     for index in range(len(lines)):
         chains.setdefault(find(index), []).append(index)
     members = list(chains.values())
-    chain_lengths = [sum(lengths[i] for i in chain) for chain in members]
-    total_length = sum(chain_lengths) or 1.0
-    main_share = round(max(chain_lengths) / total_length, 3)
-
     if len(members) == 1:
+        return connected(len(lines))
+
+    lengths = [overpass_fallback._line_length_km(line) for line in lines]
+    chain_lengths = [sum(lengths[i] for i in chain) for chain in members]
+    main_share = round(max(chain_lengths) / (sum(chain_lengths) or 1.0), 3)
+
+    if len(members) > MAX_CHAINS_FOR_GAP_TREE:
         return GeometryCompleteness(
-            status="connected",
+            status="separate_pieces",
             part_count=len(lines),
-            chain_count=1,
-            largest_gap_km=0.0,
-            total_gap_km=0.0,
-            main_chain_share=1.0,
-            note=None,
+            chain_count=len(members),
+            largest_gap_km=None,
+            total_gap_km=None,
+            main_chain_share=main_share,
+            note=(
+                f"The mapped geometry is {len(members)} separate pieces, the "
+                f"largest holding {main_share:.0%} of the mapped length. This "
+                f"is a scattered network of paths, not one route; the gaps "
+                f"between the pieces were not measured."
+            ),
         )
 
-    chain_ends = [
-        [end for i in chain for end in ends[i]] for chain in members
-    ]
+    # Only a chain's free ends can be gaps: an end already joined to another
+    # piece is inside the chain.
+    chain_ends: list[list[list[float]]] = []
+    for chain in members:
+        free = [
+            ends[i][side]
+            for i in chain
+            for side in (0, 1)
+            if (i, side) not in touching
+        ]
+        chain_ends.append(free or [ends[i][side] for i in chain for side in (0, 1)])
 
     def chain_gap(a: int, b: int) -> float:
         return min(
@@ -1186,20 +1236,17 @@ def measure_geometry_completeness(
         )
 
     # Prim's algorithm: grow one tree from chain 0 by the shortest gap.
-    joined = {0}
     edges: list[float] = []
     best = {i: chain_gap(0, i) for i in range(1, len(members))}
     while best:
         nearest = min(best, key=best.__getitem__)
         edges.append(best.pop(nearest))
-        joined.add(nearest)
         for other in best:
             best[other] = min(best[other], chain_gap(nearest, other))
 
     largest = round(max(edges), 3)
     total = round(sum(edges), 3)
-    separate = largest > SEPARATE_GAP_KM or main_share < DOMINANT_CHAIN_SHARE
-    if separate:
+    if largest > SEPARATE_GAP_KM or main_share < DOMINANT_CHAIN_SHARE:
         status = "separate_pieces"
         note = (
             f"The mapped geometry is {len(members)} separate pieces, the "

@@ -288,8 +288,8 @@ type SelectedTrailAnalysis = {
     status: "connected" | "gaps" | "separate_pieces";
     part_count: number;
     chain_count: number;
-    largest_gap_km: number;
-    total_gap_km: number;
+    largest_gap_km: number | null;
+    total_gap_km: number | null;
     main_chain_share: number;
     note: string | null;
   };
