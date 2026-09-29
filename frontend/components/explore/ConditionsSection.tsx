@@ -38,7 +38,9 @@ export default function ConditionsSection({
 
           {weather && (
             <p className="text-[11px] text-white/30">
-              Live weather at trail midpoint
+              {weather.aggregation === "worst_case"
+                ? "Live weather along the route"
+                : "Live weather at trail midpoint"}
             </p>
           )}
 
@@ -378,6 +380,44 @@ export default function ConditionsSection({
                       </li>
                     ))}
                   </ul>
+                </div>
+              ) : null}
+
+              {weather.window && weather.inference ? (
+                <div className="mt-3 rounded-xl border border-sky-300/15 bg-sky-300/[0.04] px-3 py-2.5">
+                  <p className="text-[10px] uppercase tracking-[0.15em] text-sky-200/60">
+                    Over the walk · inferred from the forecast
+                  </p>
+                  <p className="mt-1 text-[11px] leading-5 text-white/60">
+                    Over about {Math.round(weather.window.hours)} h of walking
+                    {weather.window.min_temperature !== null
+                      ? `, the coldest expected temperature is ${weather.window.min_temperature.toFixed(1)} °C`
+                      : ""}
+                    {weather.window.max_wind_speed !== null
+                      ? `, with wind up to ${weather.window.max_wind_speed.toFixed(0)} km/h`
+                      : ""}
+                    {weather.window.max_wind_gust !== null
+                      ? ` (gusts ${weather.window.max_wind_gust.toFixed(0)} km/h)`
+                      : ""}
+                    .
+                  </p>
+                  {weather.inference.freezing_level_m !== null &&
+                  weather.inference.highest_point_m !== null ? (
+                    <p className="mt-1 text-[11px] leading-5 text-white/60">
+                      {weather.inference.upper_route_above_freezing_level
+                        ? `The freezing level (${Math.round(weather.inference.freezing_level_m)} m) is below the highest point of the route (${Math.round(weather.inference.highest_point_m)} m), so the upper part is likely to be at or below freezing.`
+                        : `The freezing level (${Math.round(weather.inference.freezing_level_m)} m) is above the highest point of the route (${Math.round(weather.inference.highest_point_m)} m).`}
+                    </p>
+                  ) : null}
+                  {weather.inference.snow_on_route_likely ? (
+                    <p className="mt-1 text-[11px] leading-5 text-amber-100/80">
+                      Snow is likely on the upper route:{" "}
+                      {weather.inference.snow_reasons.join("; ")}.
+                    </p>
+                  ) : null}
+                  <p className="mt-1.5 text-[10px] leading-4 text-white/35">
+                    {weather.inference.basis} {weather.inference.window_basis}.
+                  </p>
                 </div>
               ) : null}
 

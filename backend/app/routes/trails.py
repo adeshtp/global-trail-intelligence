@@ -34,6 +34,7 @@ from app.services.route_complexity import route_complexity
 from app.services.rate_limit import enrichment_limiter, intelligence_limiter
 from app.services.assistant import answer_trail_question
 from app.services.weather import (
+    estimate_walking_hours,
     get_route_weather,
     get_weather,
     select_route_points,
@@ -734,10 +735,16 @@ async def get_selected_trail_intelligence(
     # so a hung provider is waited on once and not twice (measured 50 s
     # against 30 s). It is a cheap, cached call, and it is dropped when the
     # route has real points to read.
+    #
+    # The weather is read over the time the walk is estimated to take. That
+    # needs the ascent, which arrives with elevation, so this early fallback
+    # uses the distance alone and the route reading below uses both.
+    distance_km = analysis.get("distance_km")
     midpoint_weather = asyncio.create_task(
         get_weather(
             latitude=midpoint[1],
             longitude=midpoint[0],
+            window_hours=estimate_walking_hours(distance_km, None),
         )
     )
     # A dropped or failed fallback must not log "exception never retrieved".
@@ -756,7 +763,13 @@ async def get_selected_trail_intelligence(
     try:
         if len(route_points) > 1:
             midpoint_weather.cancel()
-            weather_result = await get_route_weather(route_points)
+            ascent = (
+                (elevation_result.get("metrics") or {}).get("elevation_gain_m")
+            )
+            weather_result = await get_route_weather(
+                route_points,
+                window_hours=estimate_walking_hours(distance_km, ascent),
+            )
         else:
             weather_result = await midpoint_weather
     except Exception as exc:

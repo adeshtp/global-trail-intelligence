@@ -135,6 +135,30 @@ export type WeatherResponse = {
     rain_mm?: number | null;
     precipitation_probability_max?: number | null;
   };
+  // The worst hourly values over the estimated walking time. Inferred from the
+  // forecast at sample points; nothing here is observed on the trail.
+  window?: {
+    hours: number;
+    min_temperature: number | null;
+    max_wind_speed: number | null;
+    max_wind_gust: number | null;
+    max_precipitation_mm: number | null;
+    snowfall_cm: number | null;
+    max_snow_depth_m: number | null;
+    min_freezing_level_m: number | null;
+    recent_snowfall_cm_72h: number | null;
+  };
+  inference?: {
+    basis: string;
+    window_hours: number;
+    window_basis: string;
+    highest_point_m: number | null;
+    freezing_level_m: number | null;
+    upper_route_above_freezing_level: boolean;
+    margin_m: number | null;
+    snow_on_route_likely: boolean;
+    snow_reasons: string[];
+  };
   aggregation?: "worst_case";
   sample_count?: number;
   samples?: Array<{

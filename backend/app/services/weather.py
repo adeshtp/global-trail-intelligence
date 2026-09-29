@@ -98,8 +98,103 @@ def _sum_window(
     return round(sum(numbers), 2) if numbers else None
 
 
+# Naismith's rule: 5 km/h on the flat plus one hour for every 600 m of ascent.
+# It is a planning convention, not a prediction of anyone's pace.
+NAISMITH_KM_PER_HOUR = 5.0
+NAISMITH_ASCENT_M_PER_HOUR = 600.0
+# The forecast is read two days ahead, so a window cannot usefully be longer
+# than a day; a multi-day route is judged on its first day.
+MIN_WINDOW_HOURS = 1.0
+MAX_WINDOW_HOURS = 24.0
+
+
+# Hourly series read only when a route window is asked for.
+WINDOW_HOURLY_VARIABLES = (
+    "temperature_2m",
+    "wind_speed_10m",
+    "wind_gusts_10m",
+    "snowfall",
+    "snow_depth",
+    "freezing_level_height",
+)
+
+# Inferring snow underfoot. Thresholds are stated here so they can be argued
+# with: snow already lying, snow expected during the walk, or recent snow with
+# the freezing level below the top of the route.
+SNOW_LYING_LIKELY_M = 0.05
+SNOW_IN_WINDOW_LIKELY_CM = 0.5
+RECENT_SNOW_LIKELY_CM = 2.0
+
+
+def estimate_walking_hours(
+    distance_km: float | None,
+    ascent_m: float | None,
+) -> float | None:
+    """
+    Time a route takes to walk, by Naismith's rule, bounded to 1-24 h.
+
+    With no ascent known only the distance counts. With no distance there is
+    no estimate, and no window.
+    """
+    distance = _number(distance_km)
+    if distance is None or distance <= 0.0:
+        return None
+    ascent = _number(ascent_m) or 0.0
+    hours = distance / NAISMITH_KM_PER_HOUR + max(ascent, 0.0) / (
+        NAISMITH_ASCENT_M_PER_HOUR
+    )
+    return max(MIN_WINDOW_HOURS, min(MAX_WINDOW_HOURS, hours))
+
+
+def _hourly_slice(
+    hourly: dict[str, Any],
+    key: str,
+    start: int,
+    end: int,
+) -> list[float]:
+    series = hourly.get(key) or []
+    return [
+        number
+        for value in series[max(0, start):end]
+        if (number := _number(value)) is not None
+    ]
+
+
+def _window_summary(
+    hourly: dict[str, Any],
+    current_index: int,
+    hours: float,
+) -> dict[str, Any]:
+    """
+    The harshest hourly values from now until the walk is estimated to end.
+
+    Both ends are included: the walk starts in the current hour and finishes
+    ``hours`` later. Missing series stay None; they are never read as zero.
+    """
+    end = current_index + int(math.ceil(hours)) + 1
+
+    def worst(key: str, pick: Any) -> float | None:
+        values = _hourly_slice(hourly, key, current_index, end)
+        return pick(values) if values else None
+
+    snowfall = _hourly_slice(hourly, "snowfall", current_index, end)
+    recent = _hourly_slice(hourly, "snowfall", current_index - 72, current_index)
+    return {
+        "hours": hours,
+        "min_temperature": worst("temperature_2m", min),
+        "max_wind_speed": worst("wind_speed_10m", max),
+        "max_wind_gust": worst("wind_gusts_10m", max),
+        "max_precipitation_mm": worst("precipitation", max),
+        "snowfall_cm": round(sum(snowfall), 2) if snowfall else None,
+        "max_snow_depth_m": worst("snow_depth", max),
+        "min_freezing_level_m": worst("freezing_level_height", min),
+        "recent_snowfall_cm_72h": round(sum(recent), 2) if recent else None,
+    }
+
+
 def normalize_weather_response(
     data: dict[str, Any],
+    window_hours: float | None = None,
 ) -> dict[str, Any]:
     current = data.get("current") or {}
     hourly = data.get("hourly") or {}
@@ -186,7 +281,13 @@ def normalize_weather_response(
         else None
     )
 
-    return {
+    window = (
+        _window_summary(hourly, current_index, window_hours)
+        if window_hours is not None and current_index is not None
+        else None
+    )
+
+    result = {
         "source": "Open-Meteo",
         "latitude": _number(data.get("latitude")),
         "longitude": _number(data.get("longitude")),
@@ -210,6 +311,9 @@ def normalize_weather_response(
         "recent_rain": recent_rain,
         "forecast": next_24h,
     }
+    if window is not None:
+        result["window"] = window
+    return result
 
 
 def _cache_key(
@@ -246,6 +350,7 @@ def _cache_set(
 async def _fetch_weather_uncached(
     latitude: float,
     longitude: float,
+    window_hours: float | None = None,
 ) -> dict[str, Any]:
     params = {
         "latitude": latitude,
@@ -268,10 +373,12 @@ async def _fetch_weather_uncached(
                 "precipitation",
                 "rain",
                 "showers",
+                *(WINDOW_HOURLY_VARIABLES if window_hours else []),
             ]
         ),
         "past_days": 3,
-        "forecast_days": 1,
+        # A window can run into tomorrow, so the forecast reaches two days.
+        "forecast_days": 2 if window_hours else 1,
         "timezone": "auto",
     }
     # One breaker for the whole Open-Meteo host, shared with elevation.
@@ -300,7 +407,7 @@ async def _fetch_weather_uncached(
             data = response.json()
         if not isinstance(data, dict):
             raise ValueError("Open-Meteo returned an invalid response")
-        result = normalize_weather_response(data)
+        result = normalize_weather_response(data, window_hours=window_hours)
         open_meteo_breaker.record_success()
         return result
     except (httpx.HTTPError, ValueError, TypeError) as exc:
@@ -439,8 +546,72 @@ def _worst(values: list[Any], pick: Any) -> float | None:
     return pick(numbers) if numbers else None
 
 
+def _route_inference(
+    windows: list[dict[str, Any]],
+    window_hours: float,
+    highest_point_m: float | None,
+) -> dict[str, Any]:
+    """
+    What the forecast implies for the route, and how far to trust it.
+
+    Compares the freezing level with the highest point and judges whether snow
+    is likely underfoot. Everything here is read from a forecast at a handful
+    of points; nothing is observed on the trail, and the basis says so.
+    """
+
+    def across(key: str, pick: Any) -> float | None:
+        values = [w[key] for w in windows if w.get(key) is not None]
+        return pick(values) if values else None
+
+    freezing = across("min_freezing_level_m", min)
+    depth = across("max_snow_depth_m", max)
+    snowfall = across("snowfall_cm", max)
+    recent = across("recent_snowfall_cm_72h", max)
+    above = (
+        highest_point_m is not None
+        and freezing is not None
+        and highest_point_m > freezing
+    )
+
+    reasons: list[str] = []
+    if depth is not None and depth >= SNOW_LYING_LIKELY_M:
+        reasons.append(f"about {depth * 100:.0f} cm of snow lying at the high points")
+    if snowfall is not None and snowfall >= SNOW_IN_WINDOW_LIKELY_CM:
+        reasons.append(f"{snowfall:.1f} cm of snow forecast during the walk")
+    if above and recent is not None and recent >= RECENT_SNOW_LIKELY_CM:
+        reasons.append(
+            f"{recent:.1f} cm of snow in the last 3 days, and the freezing "
+            f"level ({freezing:.0f} m) is below the highest point "
+            f"({highest_point_m:.0f} m)"
+        )
+
+    return {
+        "basis": (
+            "Forecast read at points along the route. This is inferred from "
+            "the forecast; conditions on the trail itself are not observed."
+        ),
+        "window_hours": window_hours,
+        "window_basis": (
+            "Estimated walking time (Naismith's rule: 5 km/h plus one hour "
+            "per 600 m of ascent)"
+        ),
+        "highest_point_m": highest_point_m,
+        "freezing_level_m": freezing,
+        "upper_route_above_freezing_level": above,
+        "margin_m": (
+            round(highest_point_m - freezing, 0)
+            if above
+            else None
+        ),
+        "snow_on_route_likely": bool(reasons),
+        "snow_reasons": reasons,
+    }
+
+
 def aggregate_route_weather(
     readings: list[tuple[dict[str, Any], dict[str, Any]]],
+    window_hours: float | None = None,
+    highest_point_m: float | None = None,
 ) -> dict[str, Any]:
     """
     Combine readings from several points into the worst case for the route.
@@ -463,7 +634,32 @@ def aggregate_route_weather(
         [w["current"].get("weather_code") for w in weathers]
     )
     first = weathers[0]
-    return {
+    windows = [w["window"] for w in weathers if w.get("window")]
+    if highest_point_m is None:
+        highest_point_m = max(
+            (point["elevation_m"] for point, _ in readings), default=None
+        )
+
+    def window_worst(key: str, pick: Any) -> float | None:
+        values = [w[key] for w in windows if w.get(key) is not None]
+        return pick(values) if values else None
+
+    merged_window = (
+        {
+            "hours": window_hours,
+            "min_temperature": window_worst("min_temperature", min),
+            "max_wind_speed": window_worst("max_wind_speed", max),
+            "max_wind_gust": window_worst("max_wind_gust", max),
+            "max_precipitation_mm": window_worst("max_precipitation_mm", max),
+            "snowfall_cm": window_worst("snowfall_cm", max),
+            "max_snow_depth_m": window_worst("max_snow_depth_m", max),
+            "min_freezing_level_m": window_worst("min_freezing_level_m", min),
+            "recent_snowfall_cm_72h": window_worst("recent_snowfall_cm_72h", max),
+        }
+        if window_hours is not None and windows
+        else None
+    )
+    result = {
         "source": "Open-Meteo",
         "latitude": first.get("latitude"),
         "longitude": first.get("longitude"),
@@ -514,14 +710,30 @@ def aggregate_route_weather(
                 "weather_condition": reading["current"].get(
                     "weather_condition"
                 ),
+                "window_min_temperature": (reading.get("window") or {}).get(
+                    "min_temperature"
+                ),
+                "freezing_level_m": (reading.get("window") or {}).get(
+                    "min_freezing_level_m"
+                ),
+                "snow_depth_m": (reading.get("window") or {}).get(
+                    "max_snow_depth_m"
+                ),
             }
             for point, reading in readings
         ],
     }
+    if merged_window is not None:
+        result["window"] = merged_window
+        result["inference"] = _route_inference(
+            windows, window_hours, highest_point_m
+        )
+    return result
 
 
 async def _fetch_route_weather_uncached(
     points: list[dict[str, Any]],
+    window_hours: float | None = None,
 ) -> dict[str, Any]:
     params = {
         "latitude": ",".join(f"{p['latitude']:g}" for p in points),
@@ -547,10 +759,12 @@ async def _fetch_route_weather_uncached(
                 "precipitation",
                 "rain",
                 "showers",
+                *(WINDOW_HOURLY_VARIABLES if window_hours else []),
             ]
         ),
         "past_days": 3,
-        "forecast_days": 1,
+        # A window can run into tomorrow, so the forecast reaches two days.
+        "forecast_days": 2 if window_hours else 1,
         "timezone": "auto",
     }
     # One breaker for the whole Open-Meteo host, shared with elevation.
@@ -574,13 +788,17 @@ async def _fetch_route_weather_uncached(
         # One location comes back as an object, several as a list.
         items = data if isinstance(data, list) else [data]
         readings = [
-            (point, normalize_weather_response(item))
+            (point, normalize_weather_response(item, window_hours=window_hours))
             for point, item in zip(points, items)
             if isinstance(item, dict)
         ]
         if not readings:
             raise ValueError("Open-Meteo returned no usable locations")
-        result = aggregate_route_weather(readings)
+        result = aggregate_route_weather(
+            readings,
+            window_hours=window_hours,
+            highest_point_m=max(p["elevation_m"] for p in points),
+        )
         open_meteo_breaker.record_success()
         return result
     except (httpx.HTTPError, ValueError, TypeError) as exc:
@@ -597,6 +815,7 @@ async def _fetch_route_weather_uncached(
 
 async def get_route_weather(
     points: list[dict[str, Any]],
+    window_hours: float | None = None,
 ) -> dict[str, Any]:
     """
     Weather for a route: one provider call, worst case across ``points``.
@@ -607,14 +826,14 @@ async def get_route_weather(
     key = tuple(
         (round(p["latitude"], 4), round(p["longitude"], 4), round(p["elevation_m"]))
         for p in points
-    )
+    ) + ((round(window_hours, 1),) if window_hours is not None else ())
     cached = _cache_get(key)
     if cached is not None:
         return cached
 
     task = _WEATHER_INFLIGHT.get(key)
     if task is None:
-        task = asyncio.create_task(_fetch_route_weather_uncached(points))
+        task = asyncio.create_task(_fetch_route_weather_uncached(points, window_hours))
         _WEATHER_INFLIGHT[key] = task
     try:
         result = await asyncio.shield(task)
@@ -629,6 +848,7 @@ async def get_route_weather(
 async def get_weather(
     latitude: float,
     longitude: float,
+    window_hours: float | None = None,
 ) -> dict[str, Any]:
     if not (
         math.isfinite(latitude)
@@ -642,6 +862,9 @@ async def get_weather(
         )
 
     key = _cache_key(latitude, longitude)
+    if window_hours is not None:
+        # A different window reads different hours, so it is a different entry.
+        key = (*key, round(window_hours, 1))
     cached = _cache_get(key)
     if cached is not None:
         return cached
@@ -649,7 +872,7 @@ async def get_weather(
     task = _WEATHER_INFLIGHT.get(key)
     if task is None:
         task = asyncio.create_task(
-            _fetch_weather_uncached(latitude, longitude)
+            _fetch_weather_uncached(latitude, longitude, window_hours)
         )
         _WEATHER_INFLIGHT[key] = task
     try:

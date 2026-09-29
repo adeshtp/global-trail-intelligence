@@ -838,6 +838,33 @@ def gear_recommendations(
     forecast = (weather or {}).get("forecast") or {}
     temperature = _number(current.get("temperature"))
     wind = _number(current.get("wind_speed"))
+
+    # The walk takes time. Cold, wind and snow are judged on the worst of the
+    # estimated walking window when one is present, and each reason says which
+    # it used. Heat stays on the current reading. With no window, this is all
+    # exactly as it was: the sources below stay "current ...".
+    window = (weather or {}).get("window") or {}
+    inference = (weather or {}).get("inference") or {}
+    window_hours = _number(window.get("hours"))
+    over = (
+        f" over the next {window_hours:.0f} h"
+        if window_hours
+        else ""
+    )
+    cold_temperature = temperature
+    cold_source = "current temperature"
+    window_cold = _number(window.get("min_temperature"))
+    if window_cold is not None and (
+        cold_temperature is None or window_cold < cold_temperature
+    ):
+        cold_temperature = window_cold
+        cold_source = f"coldest forecast temperature{over}"
+    gear_wind = wind
+    wind_source = "current wind"
+    window_wind = _number(window.get("max_wind_speed"))
+    if window_wind is not None and (gear_wind is None or window_wind > gear_wind):
+        gear_wind = window_wind
+        wind_source = f"strongest forecast wind{over}"
     snowfall = _number(current.get("snowfall"))
     condition_status = _text(
         condition.get("status") or condition.get("likelihood")
@@ -911,10 +938,27 @@ def gear_recommendations(
 
     # Snow may be reported as a measured depth, as a factor the condition
     # engine derived from the weather code, or as neither.
-    snow_reported = (
+    snow_now = (
         snowfall is not None and snowfall > 0.0
     ) or snow_factor is not None
+    snow_inferred = bool(inference.get("snow_on_route_likely"))
+    snow_reported = snow_now or snow_inferred
     snow_depth_cm = snowfall if snowfall is not None else 0.0
+    # What the snow reasoning cites, and how it words the claim. Current snow
+    # and the forecast inference are both cited when both apply.
+    snow_evidence: list[str] = []
+    if snowfall is not None and snowfall > 0.0:
+        snow_evidence.append(f"current snowfall: {snow_depth_cm:.1f} cm")
+    elif snow_now:
+        snow_evidence.append("weather reports snow on this route")
+    if snow_inferred:
+        snow_evidence.extend(str(r) for r in inference.get("snow_reasons") or [])
+    snow_phrase = (
+        "Snow is reported on this route"
+        if snow_now
+        else "Snow is likely on the upper part of this route, inferred from "
+        "the forecast"
+    )
 
     weather_known = temperature is not None or wind is not None
     # Any measured weather field at all counts as weather evidence.
@@ -1296,26 +1340,26 @@ def gear_recommendations(
                 ],
             )
 
-    if weather_known and temperature is not None and temperature <= 12.0:
+    if cold_temperature is not None and cold_temperature <= 12.0:
         offer(
             NEED_THERMAL_LAYER,
             tier="essential",
             item="Fleece or synthetic mid layer",
             category="clothing",
             reason=(
-                f"The current temperature on this route is "
-                f"{temperature:.1f} °C."
+                f"The {cold_source} on this route is "
+                f"{cold_temperature:.1f} °C."
             ),
-            evidence=[f"current temperature: {temperature:.1f} °C"],
+            evidence=[f"{cold_source}: {cold_temperature:.1f} °C"],
         )
-    if weather_known and temperature is not None and temperature <= 4.0:
+    if cold_temperature is not None and cold_temperature <= 4.0:
         offer(
             NEED_INSULATION,
             tier="essential",
             item="Insulated jacket, hat and gloves",
             category="clothing",
             reason=(
-                f"The current temperature is {temperature:.1f} °C, and heat "
+                f"The {cold_source} is {cold_temperature:.1f} °C, and heat "
                 f"is lost quickly on a stopped"
                 + (
                     f" {climb_summary.replace(' and ', '-')} route"
@@ -1325,14 +1369,13 @@ def gear_recommendations(
                 + "."
             ),
             evidence=[
-                f"current temperature: {temperature:.1f} °C",
+                f"{cold_source}: {cold_temperature:.1f} °C",
                 *climb_evidence,
             ],
         )
     if (
-        weather_known
-        and wind is not None
-        and wind >= 30.0
+        gear_wind is not None
+        and gear_wind >= 30.0
     ):
         offer(
             NEED_WIND_LAYER,
@@ -1340,7 +1383,12 @@ def gear_recommendations(
             item="Windproof outer layer",
             category="clothing",
             reason=(
-                f"Current wind on this route is {wind:.1f} km/h"
+                (
+                    "Current wind"
+                    if wind_source == "current wind"
+                    else f"The {wind_source}"
+                )
+                + f" on this route is {gear_wind:.1f} km/h"
                 + (
                     ", and the route reaches "
                     f"{max_slope:.0f}% slope over "
@@ -1350,7 +1398,7 @@ def gear_recommendations(
                 )
             ),
             evidence=[
-                f"current wind: {wind:.1f} km/h",
+                f"{wind_source}: {gear_wind:.1f} km/h",
                 *(
                     [f"steepest sampled section: {max_slope:.0f}%"]
                     if max_slope is not None
@@ -1382,7 +1430,7 @@ def gear_recommendations(
             ),
             evidence=[f"current temperature: {temperature:.1f} °C"],
         )
-    if weather_known and temperature is not None and temperature <= -10.0:
+    if cold_temperature is not None and cold_temperature <= -10.0:
         # Well below freezing the insulated layer above is not sufficient
         # on its own, whatever the route looks like.
         offer(
@@ -1391,15 +1439,15 @@ def gear_recommendations(
             item="Expedition insulation: mitts, balaclava and insulated boots",
             category="clothing",
             reason=(
-                f"The current temperature is {temperature:.1f} °C, well "
+                f"The {cold_source} is {cold_temperature:.1f} °C, well "
                 f"below freezing, so exposed skin and extremities are at "
                 f"risk of cold injury rather than merely being cold."
             ),
             evidence=[
-                f"current temperature: {temperature:.1f} °C",
+                f"{cold_source}: {cold_temperature:.1f} °C",
                 *(
-                    [f"current wind: {wind:.1f} km/h"]
-                    if wind is not None and wind >= 25.0
+                    [f"{wind_source}: {gear_wind:.1f} km/h"]
+                    if gear_wind is not None and gear_wind >= 25.0
                     else []
                 ),
             ],
@@ -1416,7 +1464,7 @@ def gear_recommendations(
                 item="Ice axe or crampons, matched to the route",
                 category="equipment",
                 reason=(
-                    f"Snow is reported on this route"
+                    snow_phrase
                     + (
                         f" and it climbs {gain:.0f} m"
                         if gain is not None
@@ -1431,11 +1479,7 @@ def gear_recommendations(
                     "than a contingency."
                 ),
                 evidence=[
-                    *(
-                        [f"current snowfall: {snow_depth_cm:.1f} cm"]
-                        if snow_depth_cm > 0.0
-                        else ["weather reports snow on this route"]
-                    ),
+                    *snow_evidence,
                     *climb_evidence,
                 ],
             )
@@ -1446,15 +1490,11 @@ def gear_recommendations(
                 item="Waterproof boots and warm layers for snow underfoot",
                 category="equipment",
                 reason=(
-                    "Snow is reported on this route, but the measured route "
+                    f"{snow_phrase}, but the measured route "
                     "is not steep enough to need traction gear."
                 ),
                 evidence=[
-                    *(
-                        [f"current snowfall: {snow_depth_cm:.1f} cm"]
-                        if snow_depth_cm > 0.0
-                        else ["weather reports snow on this route"]
-                    ),
+                    *snow_evidence,
                 ],
             )
 
