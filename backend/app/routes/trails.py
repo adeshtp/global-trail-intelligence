@@ -762,7 +762,10 @@ async def get_selected_trail_intelligence(
     )
     try:
         if len(route_points) > 1:
-            midpoint_weather.cancel()
+            # The midpoint reading is left to finish and is simply not used.
+            # Cancelling it saved no network call (its fetch is shared and
+            # shielded) and left that fetch's in-flight entry with no one to
+            # remove it.
             ascent = (
                 (elevation_result.get("metrics") or {}).get("elevation_gain_m")
             )

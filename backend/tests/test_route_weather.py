@@ -340,6 +340,71 @@ class IntelligenceUsesRouteWeatherTests(unittest.TestCase):
         self.assertTrue(needs & {"thermal_layer", "insulation"})
 
 
+class MidpointFallbackTests(unittest.TestCase):
+    """
+    The midpoint reading starts alongside elevation and is dropped when the
+    route has real points to read. Cancelling it left its shielded fetch
+    running with nobody to remove the in-flight entry, so the table grew with
+    every such trail.
+    """
+
+    def test_a_dropped_midpoint_reading_leaves_nothing_in_flight(self) -> None:
+        from app.services import postpass
+
+        way = postpass.PostpassWay(
+            way_id=7, name="Col Route", route=None, highway="path",
+            sac_scale="mountain_hiking", trail_visibility=None, surface=None,
+            smoothness=None, tracktype=None, access=None, incline=None,
+            incline_direction=None, width=None, assisted_trail=None,
+            aliases=[], geometry_type="LineString", point_count=5,
+            length_km=16.0,
+            geometry={
+                "type": "LineString",
+                "coordinates": [[6.87, p["latitude"]] for p in PROFILE],
+            },
+        )
+        terrain = {"source": "Open-Meteo", "profile": PROFILE,
+                   "metrics": {"max_elevation_m": 3000.0, "elevation_gain_m": 1500.0}}
+        merged = weather.aggregate_route_weather(
+            [
+                ({"labels": ["start"], "latitude": 45.9, "longitude": 6.87,
+                  "elevation_m": 1500.0}, _sample(15.0, 3.0)),
+                ({"labels": ["highest"], "latitude": 45.94, "longitude": 6.87,
+                  "elevation_m": 3000.0}, _sample(-3.0, 35.0)),
+            ]
+        )
+
+        async def slow_midpoint_fetch(latitude, longitude, window_hours=None):
+            await asyncio.sleep(0.25)
+            return _sample(15.0, 3.0)
+
+        async def scenario():
+            payload = await trails.get_selected_trail_intelligence(
+                trails.TrailIntelligenceRequest(
+                    trail={"osm_type": "way", "osm_id": 7, "map_ready": True,
+                           "geometry": way.geometry}
+                )
+            )
+            await asyncio.sleep(0.6)  # let any fetch still running finish
+            return payload
+
+        weather._WEATHER_CACHE.clear()
+        weather._WEATHER_INFLIGHT.clear()
+        with patch.object(
+            trails, "get_way", new=AsyncMock(return_value=way)
+        ), patch.object(
+            trails, "get_elevation_profile", new=AsyncMock(return_value=terrain)
+        ), patch.object(
+            trails, "get_route_weather", new=AsyncMock(return_value=merged)
+        ), patch.object(
+            weather, "_fetch_weather_uncached", new=slow_midpoint_fetch
+        ):
+            payload = asyncio.run(scenario())
+
+        self.assertEqual(payload["weather"]["aggregation"], "worst_case")
+        self.assertEqual(weather._WEATHER_INFLIGHT, {})
+
+
 class ParallelFetchTests(unittest.TestCase):
     """
     Elevation says where to read the weather, but a hung provider must not be
