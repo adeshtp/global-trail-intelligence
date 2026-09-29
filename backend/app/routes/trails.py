@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import math
+from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any
 
@@ -17,7 +18,11 @@ from app.services.difficulty import (
     source_difficulty,
 )
 from app.services.elevation import get_elevation_profile
-from app.services.postpass import get_relation, get_way
+from app.services.postpass import (
+    get_relation,
+    get_way,
+    measure_geometry_completeness,
+)
 from app.services.intelligence import (
     condition_likelihood,
     gear_recommendations,
@@ -598,6 +603,11 @@ def normalize_selected_geometry(
             else "fragmented"
         ),
         "component_count": len(normalized_parts),
+        # Gap measurement over the same parts. `geometry_status` and
+        # `component_count` above count pieces joined only at identical
+        # points; this also treats ends within a few metres as touching and
+        # says how large the remaining gaps are.
+        "completeness": asdict(measure_geometry_completeness(normalized_parts)),
         "coordinate_count": sum(
             len(part) for part in normalized_parts
         ),

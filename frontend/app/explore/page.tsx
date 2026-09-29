@@ -284,6 +284,15 @@ type SelectedTrailAnalysis = {
     source_length_km: number | null;
     basis: string;
   };
+  completeness?: {
+    status: "connected" | "gaps" | "separate_pieces";
+    part_count: number;
+    chain_count: number;
+    largest_gap_km: number;
+    total_gap_km: number;
+    main_chain_share: number;
+    note: string | null;
+  };
 };
 
 
@@ -3410,6 +3419,12 @@ function ExplorePageContent() {
                 . Disconnected parts are kept apart, so no distance or
                 climb is counted across the gap between them.
               </p>
+
+              {selectedAnalysis?.completeness?.note ? (
+                <p className="mt-2 max-w-[74ch] rounded-lg border border-amber-300/20 bg-amber-300/[0.05] px-2.5 py-1.5 text-[11px] leading-5 text-amber-100/80">
+                  {selectedAnalysis.completeness.note}
+                </p>
+              ) : null}
 
 
               {/* ELEVATION LOADING */}

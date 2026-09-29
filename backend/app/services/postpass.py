@@ -1073,6 +1073,159 @@ def _match_score(
 # ============================================================
 
 
+# Line ends closer than this are one continuous line whose ways simply never
+# shared a node. Live data: about a third of the gaps between the pieces of a
+# fragmented relation are this small.
+CONNECTED_TOLERANCE_KM = 0.025
+# A gap this large, or no piece holding at least half the mapped length, means
+# the pieces are separate paths rather than one route with holes in it.
+SEPARATE_GAP_KM = 2.0
+DOMINANT_CHAIN_SHARE = 0.5
+
+
+@dataclass(frozen=True)
+class GeometryCompleteness:
+    """
+    How continuous a route's mapped geometry is.
+
+    ``chain_count`` counts pieces after joining any whose ends are within
+    ``CONNECTED_TOLERANCE_KM``. ``total_gap_km`` is the shortest distance that
+    would have to be added to make them one line and ``largest_gap_km`` the
+    biggest single hole in that. Both are measurements of what is missing,
+    never geometry: no coordinate is added or moved.
+    """
+
+    status: str  # "connected" | "gaps" | "separate_pieces"
+    part_count: int
+    chain_count: int
+    largest_gap_km: float
+    total_gap_km: float
+    main_chain_share: float
+    note: str | None
+
+
+def _end_distance_km(first: list[float], second: list[float]) -> float:
+    return overpass_fallback._haversine_km(
+        first[0], first[1], second[0], second[1]
+    )
+
+
+def measure_geometry_completeness(
+    parts: list[list[list[float]]],
+) -> GeometryCompleteness:
+    """
+    Measure gaps between the pieces of a route from their line ends.
+
+    Pure measurement over the geometry as given. Pieces are grouped into
+    chains where ends nearly touch, then the chains are linked by the
+    shortest possible gaps (a minimum spanning tree over end-to-end
+    distances), which is the least that is missing from the map.
+    """
+    lines = [line for line in parts if len(line) >= 2]
+    if len(lines) <= 1:
+        return GeometryCompleteness(
+            status="connected",
+            part_count=len(lines),
+            chain_count=len(lines),
+            largest_gap_km=0.0,
+            total_gap_km=0.0,
+            main_chain_share=1.0,
+            note=None,
+        )
+
+    ends = [(line[0], line[-1]) for line in lines]
+    lengths = [overpass_fallback._line_length_km(line) for line in lines]
+
+    parent = list(range(len(lines)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    for i in range(len(lines)):
+        for j in range(i + 1, len(lines)):
+            if find(i) == find(j):
+                continue
+            if any(
+                _end_distance_km(a, b) <= CONNECTED_TOLERANCE_KM
+                for a in ends[i]
+                for b in ends[j]
+            ):
+                parent[find(j)] = find(i)
+
+    chains: dict[int, list[int]] = {}
+    for index in range(len(lines)):
+        chains.setdefault(find(index), []).append(index)
+    members = list(chains.values())
+    chain_lengths = [sum(lengths[i] for i in chain) for chain in members]
+    total_length = sum(chain_lengths) or 1.0
+    main_share = round(max(chain_lengths) / total_length, 3)
+
+    if len(members) == 1:
+        return GeometryCompleteness(
+            status="connected",
+            part_count=len(lines),
+            chain_count=1,
+            largest_gap_km=0.0,
+            total_gap_km=0.0,
+            main_chain_share=1.0,
+            note=None,
+        )
+
+    chain_ends = [
+        [end for i in chain for end in ends[i]] for chain in members
+    ]
+
+    def chain_gap(a: int, b: int) -> float:
+        return min(
+            _end_distance_km(x, y)
+            for x in chain_ends[a]
+            for y in chain_ends[b]
+        )
+
+    # Prim's algorithm: grow one tree from chain 0 by the shortest gap.
+    joined = {0}
+    edges: list[float] = []
+    best = {i: chain_gap(0, i) for i in range(1, len(members))}
+    while best:
+        nearest = min(best, key=best.__getitem__)
+        edges.append(best.pop(nearest))
+        joined.add(nearest)
+        for other in best:
+            best[other] = min(best[other], chain_gap(nearest, other))
+
+    largest = round(max(edges), 3)
+    total = round(sum(edges), 3)
+    separate = largest > SEPARATE_GAP_KM or main_share < DOMINANT_CHAIN_SHARE
+    if separate:
+        status = "separate_pieces"
+        note = (
+            f"The mapped geometry is {len(members)} separate pieces, the "
+            f"largest holding {main_share:.0%} of the mapped length, with "
+            f"gaps of up to {largest:.1f} km between them. This is closer to "
+            f"a collection of separate paths than one continuous route."
+        )
+    else:
+        status = "gaps"
+        note = (
+            f"The mapped geometry has {len(members) - 1} gap"
+            f"{'s' if len(members) > 2 else ''} totalling {total:.2f} km "
+            f"(largest {largest:.2f} km). Distances cover the mapped pieces "
+            f"only; nothing is drawn across the gaps."
+        )
+    return GeometryCompleteness(
+        status=status,
+        part_count=len(lines),
+        chain_count=len(members),
+        largest_gap_km=largest,
+        total_gap_km=total,
+        main_chain_share=main_share,
+        note=note,
+    )
+
+
 class BboxRows(list):
     """
     Rows returned for one bounding box, plus whether the query was capped.

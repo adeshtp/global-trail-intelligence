@@ -9,7 +9,7 @@ import os
 import re
 import unicodedata
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from difflib import SequenceMatcher
 from typing import Any
 
@@ -26,6 +26,7 @@ from app.services.postpass import (
     find_relations_by_names,
     get_relation,
     get_way,
+    measure_geometry_completeness,
 )
 from app.services.rate_limit import discovery_limiter
 from app.services.trail_discovery import (
@@ -3616,6 +3617,18 @@ async def _assemble_discovery_result(
     returned_mapped = mapped[
         (page - 1) * page_size : page * page_size
     ]
+    # Measured for the page being returned only: a route in several pieces
+    # says how large its gaps are, so a card is never read as one continuous
+    # trail when it is not. Single lines have nothing to report.
+    for item in returned_mapped:
+        geometry = item.get("geometry")
+        if (
+            isinstance(geometry, dict)
+            and geometry.get("type") == "MultiLineString"
+        ):
+            item["geometry_completeness"] = asdict(
+                measure_geometry_completeness(geometry.get("coordinates") or [])
+            )
     total_ranked = len(mapped)
     has_more = (page * page_size) < total_ranked
     # Verified trails beyond this page are held back rather than discarded,
