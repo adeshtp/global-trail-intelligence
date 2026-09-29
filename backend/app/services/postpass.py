@@ -17,6 +17,7 @@ from unidecode import unidecode
 
 from app.core.config import settings
 from app.services import overpass as overpass_fallback
+from app.services.rate_limit import CircuitBreaker, ProviderOutage
 
 
 logger = logging.getLogger(__name__)
@@ -371,7 +372,34 @@ async def _execute_sql(
             _SQL_INFLIGHT.pop(sql, None)
 
 
+# Consecutive outage failures open this, and queries then fail at once (so
+# callers use the Overpass fallback) instead of each paying the full retry
+# cost. Refusals such as a 4xx do not count: the server answered.
+postpass_breaker = CircuitBreaker("postpass")
+
+
 async def _execute_sql_uncached(
+    sql: str,
+) -> list[dict[str, Any]]:
+    if not postpass_breaker.allow():
+        raise ProviderOutage(
+            "Postpass is temporarily skipped after repeated failures; "
+            "it will be tried again shortly"
+        )
+    try:
+        rows = await _execute_sql_request(sql)
+    except ProviderOutage:
+        postpass_breaker.record_failure()
+        raise
+    except Exception:
+        # The server answered, even if it refused this query.
+        postpass_breaker.record_success()
+        raise
+    postpass_breaker.record_success()
+    return rows
+
+
+async def _execute_sql_request(
     sql: str,
 ) -> list[dict[str, Any]]:
     """
@@ -426,7 +454,7 @@ async def _execute_sql_uncached(
                     POSTPASS_SERVER_BACKOFF_SECONDS * (attempt + 1)
                 )
                 continue
-            raise RuntimeError(last_error) from exc
+            raise ProviderOutage(last_error) from exc
 
         if response.status_code == 200:
             break
@@ -443,13 +471,18 @@ async def _execute_sql_uncached(
                 POSTPASS_SERVER_BACKOFF_SECONDS * (attempt + 1)
             )
             continue
-        raise RuntimeError(
+        failure = (
             "Postpass returned HTTP "
             f"{response.status_code}: "
             f"{response.text.strip()[:500]}"
         )
+        raise (
+            ProviderOutage(failure)
+            if response.status_code >= 500
+            else RuntimeError(failure)
+        )
     else:
-        raise RuntimeError(
+        raise ProviderOutage(
             last_error or "Postpass is unavailable"
         )
 

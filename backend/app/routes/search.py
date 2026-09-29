@@ -74,20 +74,33 @@ async def _search_uncached(query: str) -> dict[str, Any]:
         "namedetails": 1,
     }
 
-    try:
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(10.0),
-            headers=HEADERS,
-            follow_redirects=True,
-        ) as client:
-            response = await client.get(
-                NOMINATIM_URL,
-                params=params,
+    # One retry for a transient failure only (a timeout, a dropped connection
+    # or a server error), so a single blip does not fail the search box.
+    # Nominatim's usage policy is strict, so a refusal such as 429 is never
+    # retried and there is never more than the one extra request.
+    for attempt in (0, 1):
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(10.0),
+                headers=HEADERS,
+                follow_redirects=True,
+            ) as client:
+                response = await client.get(
+                    NOMINATIM_URL,
+                    params=params,
+                )
+                response.raise_for_status()
+                payload = response.json()
+            break
+        except (httpx.HTTPError, ValueError) as exc:
+            transient = isinstance(exc, httpx.TransportError) or (
+                isinstance(exc, httpx.HTTPStatusError)
+                and exc.response.status_code >= 500
             )
-            response.raise_for_status()
-            payload = response.json()
-    except (httpx.HTTPError, ValueError) as exc:
-        raise RuntimeError("Nominatim search failed") from exc
+            if attempt == 0 and transient:
+                await asyncio.sleep(1.0)
+                continue
+            raise RuntimeError("Nominatim search failed") from exc
 
     if not isinstance(payload, list):
         raise RuntimeError("Nominatim returned an invalid result")
