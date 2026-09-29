@@ -401,6 +401,9 @@ export type TrailIntelligenceResponse = {
     status: "favorable" | "caution" | "adverse" | "unknown";
     likelihood: string;
     score: number | null;
+    // What the assessment covers: the estimated walk (cold, wind and snow from
+    // the forecast over the walking time) or only the current reading.
+    assessed_over?: "walk" | "now";
     observation_type: "inference";
     summary: string;
     evidence: string[];
@@ -417,6 +420,7 @@ export type TrailIntelligenceResponse = {
   suitability: {
     level: string;
     headline: string;
+    assessed_over?: "walk" | "now";
     condition_status: string;
     route_complexity_score: number;
     assessment_scope: string;

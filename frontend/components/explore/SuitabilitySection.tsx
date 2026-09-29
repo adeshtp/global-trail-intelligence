@@ -362,6 +362,8 @@ export default function SuitabilitySection({
                   suitabilityHeadline(
                     selectedIntelligence.suitability
                       .level,
+                    selectedIntelligence.suitability
+                      .assessed_over,
                   );
                 const decisive = selectDecisiveFactors(
                   selectedIntelligence.suitability

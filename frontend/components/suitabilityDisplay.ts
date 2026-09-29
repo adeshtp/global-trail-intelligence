@@ -35,11 +35,16 @@ export type SuitabilityFactorInput = {
 
 export function suitabilityHeadline(
   level: SuitabilityLevelInput,
+  // "walk" when the backend assessed the forecast over the estimated walking
+  // time; anything else is the current reading. The wording follows the data,
+  // it is never guessed.
+  assessedOver?: string,
 ): { headline: string; tone: SuitabilityTone } {
+  const walk = assessedOver === "walk";
   switch (level) {
     case "suitable_now":
       return {
-        headline: "Suitable right now",
+        headline: walk ? "Suitable for this walk" : "Suitable right now",
         tone: "good",
       };
     case "demanding":
@@ -49,12 +54,14 @@ export function suitabilityHeadline(
       };
     case "caution":
       return {
-        headline: "Use caution right now",
+        headline: walk ? "Use caution on this walk" : "Use caution right now",
         tone: "warn",
       };
     case "currently_unfavorable":
       return {
-        headline: "Not suitable right now",
+        headline: walk
+          ? "Not suitable for this walk"
+          : "Not suitable right now",
         tone: "bad",
       };
     case "insufficient_data":

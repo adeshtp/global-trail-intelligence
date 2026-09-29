@@ -52,7 +52,11 @@ def condition_likelihood(
     weather: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """
-    Evidence-based assessment of current route conditions.
+    Evidence-based assessment of route conditions for the walk.
+
+    When the weather carries an estimated walking window, cold, wind and snow
+    are judged on the worst of that window and every factor names its source;
+    otherwise this is the current reading, as before.
 
     This is an INFERENCE from observed and forecast weather combined with
     the route's own recorded attributes. It is never a physical observation
@@ -76,6 +80,7 @@ def condition_likelihood(
             "missing_evidence": ["live_weather"],
             "source": None,
             "observed_at": None,
+            "assessed_over": "now",
         }
 
     recent_rain = weather.get("recent_rain") or {}
@@ -100,6 +105,27 @@ def condition_likelihood(
     max_slope = _number(metrics.get("max_slope_percent"))
     elevation_gain = _number(metrics.get("elevation_gain_m"))
     surface = _text(trail.get("surface"))
+
+    # The walk takes time: cold and wind are judged on the worst of the
+    # estimated walking window when there is one, and say so. Heat and rain
+    # stay as they were. With no window the labels below are the old wording.
+    window = weather.get("window") or {}
+    inference = weather.get("inference") or {}
+    window_hours = _number(window.get("hours"))
+    over = f" over the next {window_hours:.0f} h" if window_hours else ""
+    cold_temperature = temperature
+    cold_label = "Current temperature"
+    window_cold = _number(window.get("min_temperature"))
+    if window_cold is not None and (
+        cold_temperature is None or window_cold < cold_temperature
+    ):
+        cold_temperature = window_cold
+        cold_label = f"Coldest forecast temperature{over}"
+    wind_label = "Current wind speed"
+    window_wind = _number(window.get("max_wind_speed"))
+    if window_wind is not None and (wind is None or window_wind > wind):
+        wind = window_wind
+        wind_label = f"Strongest forecast wind{over}"
 
     score = 0
     evidence: list[str] = []
@@ -241,30 +267,30 @@ def condition_likelihood(
             50,
         )
 
-    if temperature is None:
+    if cold_temperature is None:
         missing.append("temperature")
-    elif temperature <= 0.0:
+    elif cold_temperature <= 0.0:
         score += 26
         add_factor(
             "cold",
             "freezing",
-            f"Current temperature is {temperature:.1f} °C",
+            f"{cold_label} is {cold_temperature:.1f} °C",
             26,
         )
-    elif temperature <= 5.0:
+    elif cold_temperature <= 5.0:
         score += 16
         add_factor(
             "cold",
             "very_cold",
-            f"Current temperature is {temperature:.1f} °C",
+            f"{cold_label} is {cold_temperature:.1f} °C",
             16,
         )
-    elif temperature <= 10.0:
+    elif cold_temperature <= 10.0:
         score += 6
         add_factor(
             "cold",
             "cold",
-            f"Current temperature is {temperature:.1f} °C",
+            f"{cold_label} is {cold_temperature:.1f} °C",
             6,
         )
 
@@ -276,7 +302,7 @@ def condition_likelihood(
         add_factor(
             "wind",
             "storm_force",
-            f"Current wind speed is {wind:.1f} km/h",
+            f"{wind_label} is {wind:.1f} km/h",
             28,
         )
     elif wind >= 40.0:
@@ -284,7 +310,7 @@ def condition_likelihood(
         add_factor(
             "wind",
             "strong",
-            f"Current wind speed is {wind:.1f} km/h",
+            f"{wind_label} is {wind:.1f} km/h",
             18,
         )
     elif wind >= 25.0:
@@ -292,7 +318,7 @@ def condition_likelihood(
         add_factor(
             "wind",
             "breezy",
-            f"Current wind speed is {wind:.1f} km/h",
+            f"{wind_label} is {wind:.1f} km/h",
             9,
         )
 
@@ -345,18 +371,35 @@ def condition_likelihood(
     if (
         elevation_gain is not None
         and elevation_gain >= 600.0
-        and temperature is not None
-        and temperature <= 8.0
+        and cold_temperature is not None
+        and cold_temperature <= 8.0
     ):
         score += 10
         add_factor(
             "exposure",
             "high_cold_exposed",
             (
-                f"Route climbs {elevation_gain:.0f} m while the current "
-                f"temperature is {temperature:.1f} °C"
+                f"Route climbs {elevation_gain:.0f} m while the "
+                f"{cold_label[0].lower()}{cold_label[1:]} is "
+                f"{cold_temperature:.1f} °C"
             ),
             10,
+        )
+
+    # Snow expected on the route, inferred from the forecast. It is a factor of
+    # its own, not "snow": snow falling now is reported above and counted once.
+    snow_falling_now = (snowfall is not None and snowfall > 0.0) or any(
+        f["factor"] == "snow" for f in factors
+    )
+    if inference.get("snow_on_route_likely") and not snow_falling_now:
+        reasons = "; ".join(str(r) for r in inference.get("snow_reasons") or [])
+        score += 22
+        add_factor(
+            "snow_forecast",
+            "snow",
+            "Snow is likely on the upper route, inferred from the forecast"
+            + (f": {reasons}" if reasons else ""),
+            22,
         )
 
     score = max(0, min(score, 100))
@@ -370,18 +413,29 @@ def condition_likelihood(
     else:
         status = "favorable"
 
+    walk = bool(window_hours)
     summary_by_status = {
         "adverse": (
             "Observed and forecast weather indicates this route may be "
-            "unsuitable under current conditions."
+            + (
+                "unsuitable during the estimated walk."
+                if walk
+                else "unsuitable under current conditions."
+            )
         ),
         "caution": (
-            "Some current weather conditions may make parts of this route "
-            "difficult."
+            "Some forecast weather conditions during the walk may make parts "
+            "of this route difficult."
+            if walk
+            else "Some current weather conditions may make parts of this "
+            "route difficult."
         ),
         "favorable": (
             "No adverse weather signal is present in the available data for "
-            "this route right now."
+            "this route over the estimated walk."
+            if walk
+            else "No adverse weather signal is present in the available data "
+            "for this route right now."
         ),
         "unknown": (
             "Not enough verified weather evidence is available to assess this "
@@ -401,6 +455,8 @@ def condition_likelihood(
         "missing_evidence": missing,
         "source": weather.get("source") or "Open-Meteo",
         "observed_at": (weather.get("current") or {}).get("time"),
+        # What the assessment covers, so wording downstream can follow it.
+        "assessed_over": "walk" if walk else "now",
     }
 
 
@@ -507,6 +563,7 @@ def route_suitability_context(
         })
 
     condition_status = _text(condition.get("status") or condition.get("likelihood"))
+    walk = condition.get("assessed_over") == "walk"
     for condition_factor in condition.get("factors", []) or []:
         if not isinstance(condition_factor, dict):
             continue
@@ -538,13 +595,19 @@ def route_suitability_context(
     elif condition_status == "adverse":
         level = "currently_unfavorable"
         headline = (
-            "Current observed and forecast weather indicates this route may "
-            "be unsuitable right now."
+            "Observed and forecast weather indicates this route may be "
+            "unsuitable during the estimated walk."
+            if walk
+            else "Current observed and forecast weather indicates this route "
+            "may be unsuitable right now."
         )
     elif condition_status == "caution" or complexity_score >= 4:
         level = "caution"
         headline = (
-            "Current conditions and route demands may make parts of this "
+            "Forecast conditions during the estimated walk and route demands "
+            "may make parts of this route difficult."
+            if walk
+            else "Current conditions and route demands may make parts of this "
             "route difficult."
         )
     elif complexity_score >= 2:
@@ -565,10 +628,16 @@ def route_suitability_context(
         "headline": headline,
         "condition_status": condition_status or "unknown",
         "route_complexity_score": complexity_score,
+        "assessed_over": "walk" if walk else "now",
         "assessment_scope": (
-            "Route demands and observed current conditions only. No user "
-            "age, fitness, health, experience, or medical assumptions were "
-            "used, and nothing here is a guarantee about the route."
+            (
+                "Route demands and the forecast over the estimated walk only."
+                if walk
+                else "Route demands and observed current conditions only."
+            )
+            + " No user age, fitness, health, experience, or medical "
+            "assumptions were used, and nothing here is a guarantee about "
+            "the route."
         ),
         "factors": factors,
     }
