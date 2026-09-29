@@ -125,6 +125,25 @@ class AggregateTests(unittest.TestCase):
         self.assertEqual(merged["samples"][1]["elevation_m"], 3800.0)
         self.assertEqual(merged["samples"][1]["temperature"], -5.0)
 
+    def test_the_weather_code_is_the_most_severe_not_the_highest_number(self) -> None:
+        point = {"labels": ["start"], "latitude": 1.0, "longitude": 1.0,
+                 "elevation_m": 100.0}
+        # 80 (slight rain showers) is numerically above 73 (moderate snow),
+        # but snow is the harsher weather.
+        merged = weather.aggregate_route_weather(
+            [(point, _sample(2.0, 5.0, code=80)), (point, _sample(-3.0, 5.0, code=73))]
+        )
+        self.assertEqual(merged["current"]["weather_code"], 73)
+        self.assertEqual(merged["current"]["weather_condition"], "Moderate snowfall")
+
+    def test_a_thunderstorm_outranks_everything(self) -> None:
+        point = {"labels": ["start"], "latitude": 1.0, "longitude": 1.0,
+                 "elevation_m": 100.0}
+        merged = weather.aggregate_route_weather(
+            [(point, _sample(2.0, 5.0, code=75)), (point, _sample(9.0, 5.0, code=95))]
+        )
+        self.assertEqual(merged["current"]["weather_code"], 95)
+
     def test_a_missing_reading_does_not_hide_another_points_reading(self) -> None:
         a = _sample(None, None)
         b = _sample(4.0, 12.0)

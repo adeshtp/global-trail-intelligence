@@ -388,6 +388,37 @@ def select_route_points(
     return samples
 
 
+# WMO weather codes are not ordered by how bad the weather is (80, slight
+# showers, is numerically above 73, moderate snow), so severity is ranked
+# explicitly, harshest last. A code missing from this table ranks as clear.
+_CODE_SEVERITY_TIERS: tuple[tuple[int, ...], ...] = (
+    (0,),
+    (1, 2),
+    (3,),
+    (45, 48),
+    (51, 53, 55),
+    (61, 80),
+    (63, 81, 56, 57),
+    (65, 82, 66, 67),
+    (71, 77, 85),
+    (73,),
+    (75, 86),
+    (95, 96, 99),
+)
+_CODE_SEVERITY = {
+    code: rank
+    for rank, codes in enumerate(_CODE_SEVERITY_TIERS)
+    for code in codes
+}
+
+
+def _most_severe_code(codes: list[Any]) -> int | None:
+    numbers = [n for value in codes if (n := _number(value)) is not None]
+    if not numbers:
+        return None
+    return int(max(numbers, key=lambda n: _CODE_SEVERITY.get(int(n), 0)))
+
+
 def _worst(values: list[Any], pick: Any) -> float | None:
     numbers = [n for value in values if (n := _number(value)) is not None]
     return pick(numbers) if numbers else None
@@ -413,8 +444,9 @@ def aggregate_route_weather(
     def window(group: str, key: str) -> float | None:
         return _worst([(w.get(group) or {}).get(key) for w in weathers], max)
 
-    code = current("weather_code", max)
-    code_value = int(code) if code is not None else None
+    code_value = _most_severe_code(
+        [w["current"].get("weather_code") for w in weathers]
+    )
     first = weathers[0]
     return {
         "source": "Open-Meteo",
