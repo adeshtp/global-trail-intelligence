@@ -580,6 +580,12 @@ type TrailIntelligenceResponse = {
     conditional_count: number;
     basis: string[];
     missing_evidence: string[];
+    activity?: {
+      type: "day_hike" | "multi_day_trek" | "high_altitude_trek" | "technical_alpine";
+      label: string;
+      query_term: string;
+      reasons: string[];
+    };
   };
   providers: Record<string, "ok" | "unavailable">;
 };
@@ -4355,6 +4361,15 @@ function ExplorePageContent() {
                     observed on it right now. Each item appears because
                     something about this route asked for it.
                   </p>
+
+                  {selectedIntelligence.gear.activity ? (
+                    <p className="mt-3 max-w-[70ch] rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-[12px] leading-5 text-white/60">
+                      <span className="font-semibold text-white/85">
+                        {selectedIntelligence.gear.activity.label}.
+                      </span>{" "}
+                      {selectedIntelligence.gear.activity.reasons.join("; ")}.
+                    </p>
+                  ) : null}
 
                   {(
                     [

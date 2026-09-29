@@ -378,6 +378,7 @@ async def verify_selected_trail(
             "surface": way.surface,
             "trail_visibility": way.trail_visibility,
             "source_difficulty": way.sac_scale,
+            "assisted_trail": way.assisted_trail,
             "geometry": server_geometry,
             "geometry_hash": _geometry_hash(server_geometry),
             "member_way_ids": [way.way_id],
@@ -544,6 +545,9 @@ async def _verified_member_trails(
                 "incline_direction": way.incline_direction,
                 "width": way.width,
                 "assisted_trail": way.assisted_trail,
+                # Read by the activity classifier only. The difficulty
+                # model's features do not include it.
+                "sac_scale": way.sac_scale,
                 "length_km": way.length_km,
                 "geometry": way.geometry,
                 "source": way.source,
@@ -826,6 +830,7 @@ async def get_selected_trail_intelligence(
         "condition": condition,
         "suitability": suitability,
         "gear": gear,
+        "activity": gear["activity"],
         "route_complexity": complexity,
         "providers": provider_status,
     }

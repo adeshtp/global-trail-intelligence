@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import asdict, dataclass
+from enum import Enum
 from typing import Any
 
 
@@ -596,6 +598,178 @@ NEED_WINTER = "winter_equipment"
 
 TIER_ORDER = {"essential": 0, "recommended": 1, "conditional": 2}
 
+# Needs that only some kinds of trip create.
+NEED_OVERNIGHT = "overnight"
+NEED_RESUPPLY = "resupply"
+NEED_ACCLIMATISATION = "acclimatisation"
+NEED_HELMET = "helmet"
+NEED_HARNESS = "harness"
+NEED_EXPERIENCE = "experience"
+
+
+# ============================================================
+# ACTIVITY
+# ============================================================
+
+# A route longer than this is more than a day at a walking pace.
+MULTI_DAY_KM = 25.0
+# Above this, altitude itself is a preparation need.
+HIGH_ALTITUDE_M = 3000.0
+VERY_HIGH_ALTITUDE_M = 4000.0
+# SAC grades that mean glacier, rock or climbing terrain. T4 (alpine hiking)
+# is exposed walking and is deliberately not in this set.
+TECHNICAL_GRADES = {"demanding_alpine_hiking", "difficult_alpine_hiking"}
+
+
+class ActivityType(str, Enum):
+    DAY_HIKE = "day_hike"
+    MULTI_DAY_TREK = "multi_day_trek"
+    HIGH_ALTITUDE_TREK = "high_altitude_trek"
+    TECHNICAL_ALPINE = "technical_alpine"
+
+
+_ACTIVITY_LABELS = {
+    ActivityType.DAY_HIKE: ("Day hike", "hiking"),
+    ActivityType.MULTI_DAY_TREK: ("Multi-day trek", "trekking"),
+    ActivityType.HIGH_ALTITUDE_TREK: (
+        "High-altitude trek",
+        "high altitude trekking",
+    ),
+    ActivityType.TECHNICAL_ALPINE: (
+        "Technical alpine route",
+        "mountaineering",
+    ),
+}
+_ACTIVITY_RANK = {
+    ActivityType.DAY_HIKE: 0,
+    ActivityType.MULTI_DAY_TREK: 1,
+    ActivityType.HIGH_ALTITUDE_TREK: 2,
+    ActivityType.TECHNICAL_ALPINE: 3,
+}
+
+
+@dataclass(frozen=True)
+class ActivityProfile:
+    """
+    What kind of trip a route is, with the signals that say so.
+
+    ``query_term`` is the word product search uses in place of "hiking".
+    """
+
+    type: ActivityType
+    label: str
+    query_term: str
+    reasons: tuple[str, ...]
+    max_elevation_m: float | None = None
+    distance_km: float | None = None
+    assisted: bool = False
+
+    def as_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["type"] = self.type.value
+        data["reasons"] = list(self.reasons)
+        return data
+
+
+def classify_activity(
+    trail: dict[str, Any],
+    analysis: dict[str, Any],
+) -> ActivityProfile:
+    """
+    Decide what kind of trip this route is from recorded and measured signals.
+
+    Each rule reads one signal and names it in ``reasons``; the most demanding
+    activity any signal supports wins. Nothing here reads the user or the
+    weather. Ways of a route are read as well as the route itself, because a
+    relation usually carries no grade of its own while its ways do.
+    """
+    members = [
+        member
+        for member in (trail.get("member_trails") or [])
+        if isinstance(member, dict)
+    ]
+    grades = {
+        grade
+        for grade in [
+            _text(trail.get("source_difficulty")),
+            *(_text(member.get("sac_scale")) for member in members),
+        ]
+        if grade
+    }
+    distance = _number(analysis.get("distance_km")) or _number(
+        trail.get("length_km")
+    )
+    max_elevation = _number(
+        ((trail.get("terrain") or {}).get("metrics") or {}).get(
+            "max_elevation_m"
+        )
+    )
+    assisted = any(
+        _text(value) in {"yes", "via_ferrata"}
+        for value in [
+            trail.get("assisted_trail"),
+            *(member.get("assisted_trail") for member in members),
+        ]
+    ) or any(
+        _text(value) == "via_ferrata"
+        for value in [
+            trail.get("highway_type"),
+            *(member.get("highway_type") for member in members),
+        ]
+    )
+
+    found: list[tuple[ActivityType, str]] = []
+    technical_grade = sorted(grades & TECHNICAL_GRADES)
+    if technical_grade:
+        found.append(
+            (
+                ActivityType.TECHNICAL_ALPINE,
+                f"recorded grade {technical_grade[-1]} (glacier, rock or "
+                f"climbing terrain)",
+            )
+        )
+    if assisted:
+        found.append(
+            (
+                ActivityType.TECHNICAL_ALPINE,
+                "fixed aids recorded (via ferrata or assisted trail)",
+            )
+        )
+    if max_elevation is not None and max_elevation >= HIGH_ALTITUDE_M:
+        found.append(
+            (
+                ActivityType.HIGH_ALTITUDE_TREK,
+                f"highest sampled point {max_elevation:.0f} m",
+            )
+        )
+    if distance is not None and distance >= MULTI_DAY_KM:
+        found.append(
+            (
+                ActivityType.MULTI_DAY_TREK,
+                f"{distance:.0f} km of route, more than a day at a walking "
+                f"pace",
+            )
+        )
+
+    activity = max(
+        (kind for kind, _ in found),
+        key=_ACTIVITY_RANK.__getitem__,
+        default=ActivityType.DAY_HIKE,
+    )
+    reasons = tuple(reason for _, reason in found) or (
+        "no signal beyond an ordinary walked route",
+    )
+    label, query_term = _ACTIVITY_LABELS[activity]
+    return ActivityProfile(
+        type=activity,
+        label=label,
+        query_term=query_term,
+        reasons=reasons,
+        max_elevation_m=max_elevation,
+        distance_km=distance,
+        assisted=assisted,
+    )
+
 
 def gear_recommendations(
     trail: dict[str, Any],
@@ -799,6 +973,129 @@ def gear_recommendations(
         ),
         evidence=["OSM identity is verified and stable"],
     )
+
+    # ---------------- ACTIVITY-DRIVEN REQUIREMENTS ----------------
+    # The kind of trip changes what preparation is worth stating. Each item
+    # is justified by the recorded or measured signal that created it, and
+    # signals are read individually rather than from the winning label, so a
+    # long route that also climbs high gets both sets.
+    profile = classify_activity(trail, analysis)
+    max_elevation = _number(elevation.get("max_elevation_m"))
+
+    if distance >= MULTI_DAY_KM:
+        multi_day_evidence = [f"{distance:.0f} km of verified route"]
+        offer(
+            NEED_OVERNIGHT,
+            tier="recommended",
+            item="Overnight plan: huts, lodging or shelter and a sleep system",
+            category="shelter",
+            reason=(
+                f"The route is {distance:.0f} km, which is more than a day at "
+                f"a walking pace, so where to sleep has to be settled before "
+                f"starting."
+            ),
+            evidence=multi_day_evidence,
+        )
+        offer(
+            NEED_RESUPPLY,
+            tier="recommended",
+            item="Food and water resupply plan for each day",
+            category="food",
+            reason=(
+                f"A {distance:.0f} km route cannot be carried on one day's "
+                f"supplies, so resupply points need to be known in advance."
+            ),
+            evidence=multi_day_evidence,
+        )
+        offer(
+            NEED_LIGHT,
+            tier="recommended",
+            item="Headlamp",
+            category="lighting",
+            reason=(
+                f"On a {distance:.0f} km route some walking is unlikely to "
+                f"finish in daylight."
+            ),
+            evidence=multi_day_evidence,
+        )
+
+    if max_elevation is not None and max_elevation >= HIGH_ALTITUDE_M:
+        altitude_evidence = [f"highest sampled point {max_elevation:.0f} m"]
+        offer(
+            NEED_ACCLIMATISATION,
+            tier=(
+                "essential"
+                if max_elevation >= VERY_HIGH_ALTITUDE_M
+                else "recommended"
+            ),
+            item="Acclimatisation plan and the signs of altitude sickness",
+            category="acclimatisation",
+            reason=(
+                f"The route reaches {max_elevation:.0f} m, where altitude "
+                f"itself affects how the body copes, so the pace of ascent and "
+                f"rest days need planning."
+            ),
+            evidence=altitude_evidence,
+        )
+        offer(
+            NEED_INSULATION,
+            tier="recommended",
+            item="Insulating layer for the high sections",
+            category="clothing",
+            reason=(
+                "Air temperature falls with height, so the high sections are "
+                "colder than a valley reading suggests."
+            ),
+            evidence=altitude_evidence,
+        )
+        offer(
+            NEED_SUN,
+            tier="recommended",
+            item="Sunglasses and high-SPF sun protection",
+            category="sun protection",
+            reason=(
+                "Ultraviolet exposure increases with altitude, and more so "
+                "over snow."
+            ),
+            evidence=altitude_evidence,
+        )
+
+    if profile.type == ActivityType.TECHNICAL_ALPINE:
+        technical_evidence = list(profile.reasons)
+        offer(
+            NEED_EXPERIENCE,
+            tier="essential",
+            item="Mountaineering experience, or a qualified guide",
+            category="experience",
+            reason=(
+                "The recorded terrain goes beyond hiking, so it should not be "
+                "attempted without the skills for it."
+            ),
+            evidence=technical_evidence,
+        )
+        offer(
+            NEED_HELMET,
+            tier="essential" if profile.assisted else "recommended",
+            item="Climbing helmet",
+            category="equipment",
+            reason=(
+                "Rockfall and falls are the main hazards on terrain of this "
+                "kind."
+            ),
+            evidence=technical_evidence,
+        )
+        if profile.assisted:
+            offer(
+                NEED_HARNESS,
+                tier="essential",
+                item="Harness and via ferrata set",
+                category="equipment",
+                reason=(
+                    "Fixed aids are recorded on this route, and they are used "
+                    "by clipping in."
+                ),
+                evidence=technical_evidence,
+            )
 
     # ---------------- TERRAIN-DRIVEN REQUIREMENTS ----------------
     if surface and surface not in {"asphalt", "paved", "concrete", "cement"}:
@@ -1216,7 +1513,10 @@ def gear_recommendations(
     group_of = {
         "navigation": "preparation",
         "first_aid": "preparation",
+        "acclimatisation": "preparation",
+        "experience": "preparation",
         "hydration": "supplies",
+        "food": "supplies",
     }
     for entry in ordered:
         entry["group"] = group_of.get(
@@ -1259,4 +1559,5 @@ def gear_recommendations(
         ),
         "basis": basis,
         "missing_evidence": missing,
+        "activity": profile.as_dict(),
     }

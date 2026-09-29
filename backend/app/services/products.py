@@ -35,7 +35,15 @@ GEAR_PRIORITY_RANK = {"essential": 0, "recommended": 1, "conditional": 2}
 # Gear needs that cannot be bought. Searching a real shop for an offline map
 # or a first-aid principle wastes a provider call and produces a misleading
 # card, so they are excluded from the product request entirely.
-NON_PURCHASABLE_NEEDS = {"navigation", "first_aid"}
+NON_PURCHASABLE_NEEDS = {
+    "navigation",
+    "first_aid",
+    # Plans and qualifications for a trip, not things a shop sells.
+    "overnight",
+    "resupply",
+    "acclimatisation",
+    "experience",
+}
 PRODUCT_CACHE_TTL_SECONDS = max(
     300.0,
     min(float(os.getenv("PRODUCT_CACHE_TTL_SECONDS", "1800")), 86400.0),
@@ -207,7 +215,15 @@ def _query_for_item(
         (intelligence.get("condition") or {}).get("likelihood")
     )
     phrase = _searchable_phrase(item["item"])
-    terms = [phrase, "hiking"]
+    # The activity the gear list was built for ("trekking", "mountaineering"),
+    # so a route that is not a walk is not shopped for as one.
+    activity = (
+        ((intelligence.get("gear") or {}).get("activity") or {}).get(
+            "query_term"
+        )
+        or "hiking"
+    )
+    terms = [phrase, activity]
     # The condition status values are exactly those the gear logic produces:
     # favorable, caution, adverse, unknown. An earlier set of "moderate" and
     # "high" could never match a real status, so this branch was dead and wet
