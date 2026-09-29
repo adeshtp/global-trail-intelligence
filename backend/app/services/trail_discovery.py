@@ -125,6 +125,10 @@ TAVILY_API_KEY = (
     os.getenv("TAVILY_API_KEY")
     or getattr(settings, "TAVILY_API_KEY", "")
 ).strip()
+GEMINI_TIMEOUT_SECONDS = max(
+    1.0,
+    float(os.getenv("GEMINI_TIMEOUT_SECONDS", "30")),
+)
 GEMINI_MODEL = (
     os.getenv("TRAIL_DISCOVERY_GEMINI_MODEL")
     or getattr(
@@ -909,14 +913,19 @@ async def _run_gemini(
 
     client = genai.Client(api_key=GEMINI_API_KEY)
     try:
-        response = await client.aio.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=_build_gemini_input(place, results),
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=_RESPONSE_SCHEMA,
-                temperature=0.1,
+        # Bounded: an extraction that never answers must fall back to the
+        # deterministic candidates rather than hold the whole search open.
+        response = await asyncio.wait_for(
+            client.aio.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=_build_gemini_input(place, results),
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=_RESPONSE_SCHEMA,
+                    temperature=0.1,
+                ),
             ),
+            timeout=GEMINI_TIMEOUT_SECONDS,
         )
     finally:
         close = getattr(client, "close", None)

@@ -7,6 +7,7 @@ import logging
 import math
 import os
 import re
+import time
 import unicodedata
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
@@ -107,6 +108,14 @@ MAX_TILE_SPAN_DEG = max(
 MAX_TILES = max(
     1,
     min(int(os.getenv("MAX_DISCOVERY_TILES", "40")), 64),
+)
+# The longest a search may keep starting new provider queries. Past it, no new
+# tile is queried and no capped tile is split further; what was skipped or cut
+# is reported in `coverage`, and the results found so far are returned. A query
+# already in flight is bounded by its own provider timeout.
+DISCOVERY_TIME_BUDGET_SECONDS = max(
+    0.0,
+    float(os.getenv("DISCOVERY_TIME_BUDGET_SECONDS", "60")),
 )
 # Bounded concurrency for tiled Postpass queries, kept well inside the public
 # service's tolerance.
@@ -832,6 +841,7 @@ async def _expand_truncated(
     way_limit: int,
     budget: _QueryBudget,
     semaphore: asyncio.Semaphore,
+    deadline: float | None = None,
 ) -> _TileHarvest:
     """
     Re-query a capped tile as four quadrants, recursively, within the budget.
@@ -843,8 +853,8 @@ async def _expand_truncated(
     again; only what the quadrants add is.
 
     Whatever cannot be resolved, because the shared budget is spent or the
-    tile is already at the minimum size, is counted in ``*_truncated`` and
-    reported, never hidden. A failed re-query counts the same way: its rows
+    tile is already at the minimum size or the time ``deadline`` has passed, is
+    counted in ``*_truncated`` and reported, never hidden. A failed re-query counts the same way: its rows
     are unknown.
     """
     need_relations = bool(getattr(relation_rows, "truncated", False))
@@ -855,7 +865,8 @@ async def _expand_truncated(
 
     west, south, east, north = tile
     half_span = max(north - south, east - west) / 2
-    if half_span < MIN_SPLIT_SPAN_DEG or not budget.take(4):
+    out_of_time = deadline is not None and time.monotonic() >= deadline
+    if half_span < MIN_SPLIT_SPAN_DEG or out_of_time or not budget.take(4):
         harvest.relations_truncated += int(need_relations)
         harvest.ways_truncated += int(need_ways)
         return harvest
@@ -894,6 +905,7 @@ async def _expand_truncated(
             way_limit=way_limit,
             budget=budget,
             semaphore=semaphore,
+            deadline=deadline,
         )
         found.merge(child)
         return found
@@ -3051,6 +3063,31 @@ def _enforce_discovery_limit(request: Request | None) -> None:
         )
 
 
+async def _timed_assemble(started: float, **kwargs: Any) -> dict[str, Any]:
+    """
+    Assemble the response and record where the time went.
+
+    ``started`` is when discovery began, so ``providers`` is everything up to
+    the point the provider rows were in hand and ``assemble`` is the
+    evidence, ranking and response stage after it.
+    """
+    providers_done = time.monotonic()
+    result = await _assemble_discovery_result(**kwargs)
+    finished = time.monotonic()
+    timings = {
+        "providers": round((providers_done - started) * 1000),
+        "assemble": round((finished - providers_done) * 1000),
+    }
+    result.setdefault("diagnostics", {})["timings_ms"] = timings
+    logger.info(
+        "Discovery for %r: providers %d ms, assemble %d ms",
+        kwargs.get("place"),
+        timings["providers"],
+        timings["assemble"],
+    )
+    return result
+
+
 async def _run_discovery(
     *,
     latitude: float,
@@ -3074,6 +3111,8 @@ async def _run_discovery(
     verified-only result, so a client may render the first and then replace
     it with the second.
     """
+    started = time.monotonic()
+    deadline = started + DISCOVERY_TIME_BUDGET_SECONDS
     agent_task: asyncio.Task | None = None
     if include_semantic:
         agent_task = asyncio.create_task(
@@ -3129,6 +3168,10 @@ async def _run_discovery(
                 tile: tuple[float, float, float, float],
             ) -> None:
                 async with semaphore:
+                    # A tile that only gets a slot after the budget is spent
+                    # is not queried; it is reported as skipped.
+                    if time.monotonic() >= deadline:
+                        return
                     way_rows, relation_rows = await asyncio.gather(
                         discover_named_trail_ways_in_bbox(
                             tile,
@@ -3167,6 +3210,7 @@ async def _run_discovery(
                     way_limit=per_tile_ways,
                     budget=budget,
                     semaphore=semaphore,
+                    deadline=deadline,
                 )
                 way_hits.extend(extra.ways)
                 relation_hits.extend(extra.relations)
@@ -3174,11 +3218,10 @@ async def _run_discovery(
                 counters["ways_truncated"] += extra.ways_truncated
                 counters["splits"] += extra.splits
 
-            for batch in (
-                tiles[i : i + TILE_CONCURRENCY * 2]
-                for i in range(0, len(tiles), TILE_CONCURRENCY * 2)
-            ):
-                await asyncio.gather(*(_one(tile) for tile in batch))
+            # Every tile is scheduled at once; the semaphore alone bounds how
+            # many run. Awaiting fixed batches made each batch wait for its
+            # slowest tile.
+            await asyncio.gather(*(_one(tile) for tile in tiles))
             return way_hits, relation_hits, counters
 
         tiles_task = asyncio.create_task(_query_tiles())
@@ -3245,7 +3288,8 @@ async def _run_discovery(
         else:
             semantic_result = agent_result
 
-        return await _assemble_discovery_result(
+        return await _timed_assemble(
+            started,
             place=place,
             scope=scope,
             latitude=latitude,
@@ -3295,6 +3339,7 @@ async def _run_discovery(
         way_limit=single_tile_limits[1],
         budget=_QueryBudget(MAX_TILES - 1),
         semaphore=asyncio.Semaphore(TILE_CONCURRENCY),
+        deadline=deadline,
     )
     if extra.relations:
         relation_result = _dedupe_rows(
@@ -3330,7 +3375,8 @@ async def _run_discovery(
     else:
         semantic_result = agent_result
 
-    return await _assemble_discovery_result(
+    return await _timed_assemble(
+        started,
         place=place,
         scope=scope,
         latitude=latitude,
