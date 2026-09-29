@@ -671,6 +671,32 @@ class ActivityProfile:
         return data
 
 
+def continuous_distance_km(
+    trail: dict[str, Any],
+    analysis: dict[str, Any],
+) -> tuple[float | None, bool]:
+    """
+    The distance that says how long a trip is, and whether it was reduced.
+
+    Normally the whole mapped length. When the geometry is a scattered network
+    of separate pieces (a "Core Paths" of 236 km in 140 pieces, the largest
+    holding 5%) that total is not a trip anyone walks, so the largest piece is
+    used instead. The second value is True when that reduction was applied.
+    """
+    distance = _number(analysis.get("distance_km")) or _number(
+        trail.get("length_km")
+    )
+    completeness = analysis.get("completeness") or {}
+    share = _number(completeness.get("main_chain_share"))
+    if (
+        distance is not None
+        and completeness.get("status") == "separate_pieces"
+        and share is not None
+    ):
+        return distance * share, True
+    return distance, False
+
+
 def classify_activity(
     trail: dict[str, Any],
     analysis: dict[str, Any],
@@ -696,9 +722,7 @@ def classify_activity(
         ]
         if grade
     }
-    distance = _number(analysis.get("distance_km")) or _number(
-        trail.get("length_km")
-    )
+    distance, largest_piece_only = continuous_distance_km(trail, analysis)
     max_elevation = _number(
         ((trail.get("terrain") or {}).get("metrics") or {}).get(
             "max_elevation_m"
@@ -746,8 +770,13 @@ def classify_activity(
         found.append(
             (
                 ActivityType.MULTI_DAY_TREK,
-                f"{distance:.0f} km of route, more than a day at a walking "
-                f"pace",
+                (
+                    f"{distance:.0f} km in its largest continuous piece, more "
+                    f"than a day at a walking pace"
+                    if largest_piece_only
+                    else f"{distance:.0f} km of route, more than a day at a "
+                    f"walking pace"
+                ),
             )
         )
 
@@ -981,9 +1010,265 @@ def gear_recommendations(
     # long route that also climbs high gets both sets.
     profile = classify_activity(trail, analysis)
     max_elevation = _number(elevation.get("max_elevation_m"))
+    # A scattered network is judged by its largest piece, not its total.
+    trip_km, _ = continuous_distance_km(trail, analysis)
 
-    if distance >= MULTI_DAY_KM:
-        multi_day_evidence = [f"{distance:.0f} km of verified route"]
+    if max_elevation is not None and max_elevation >= HIGH_ALTITUDE_M:
+        found.append(
+            (
+                ActivityType.HIGH_ALTITUDE_TREK,
+                f"highest sampled point {max_elevation:.0f} m",
+            )
+        )
+    if distance is not None and distance >= MULTI_DAY_KM:
+        found.append(
+            (
+                ActivityType.MULTI_DAY_TREK,
+                (
+                    f"{distance:.0f} km in its largest continuous piece, more "
+                    f"than a day at a walking pace"
+                    if largest_piece_only
+                    else f"{distance:.0f} km of route, more than a day at a "
+                    f"walking pace"
+                ),
+            )
+        )
+
+    activity = max(
+        (kind for kind, _ in found),
+        key=_ACTIVITY_RANK.__getitem__,
+        default=ActivityType.DAY_HIKE,
+    )
+    reasons = tuple(reason for _, reason in found) or (
+        "no signal beyond an ordinary walked route",
+    )
+    label, query_term = _ACTIVITY_LABELS[activity]
+    return ActivityProfile(
+        type=activity,
+        label=label,
+        query_term=query_term,
+        reasons=reasons,
+        max_elevation_m=max_elevation,
+        distance_km=distance,
+        assisted=assisted,
+    )
+
+
+def gear_recommendations(
+    trail: dict[str, Any],
+    analysis: dict[str, Any],
+    weather: dict[str, Any] | None,
+    condition: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Prioritised, evidence-grounded preparation for the selected route.
+
+    Rules that this function deliberately enforces:
+
+    * Every item is justified by a measured quantity (route length, sampled
+      ascent, sampled slope, recorded surface) or by an actual weather
+      observation. Nothing is included just because it is common hiking kit.
+    * Weather-specific items require the corresponding weather evidence.
+      Without live weather, no rain, cold, snow or wind item is produced.
+    * Items are tiered. A universal hiking checklist is not returned, and the
+      number of items scales with what the route and conditions actually
+      require.
+    * Two items serving the same preparation need are merged, not stacked.
+    """
+    distance = (
+        _number(analysis.get("distance_km"))
+        or _number(trail.get("length_km"))
+        or 0.0
+    )
+    elevation = (trail.get("terrain") or {}).get("metrics") or {}
+    gain = _number(elevation.get("elevation_gain_m"))
+    loss = _number(elevation.get("elevation_loss_m"))
+    max_slope = _number(elevation.get("max_slope_percent"))
+    elevation_range = _number(elevation.get("elevation_range_m"))
+    surface = _text(trail.get("surface"))
+    current = (weather or {}).get("current") or {}
+    recent_rain = (weather or {}).get("recent_rain") or {}
+    recent_precip = (weather or {}).get("recent_precipitation") or {}
+    forecast = (weather or {}).get("forecast") or {}
+    temperature = _number(current.get("temperature"))
+    wind = _number(current.get("wind_speed"))
+    snowfall = _number(current.get("snowfall"))
+    condition_status = _text(
+        condition.get("status") or condition.get("likelihood")
+    )
+    condition_available = bool(condition.get("available"))
+
+    # ------------------------------------------------------------------
+    # PRECIPITATION / SNOW EVIDENCE
+    #
+    # Wetness and snow are read from the actual measurements, not from the
+    # condition engine's overall verdict. A `caution` or `adverse` status is
+    # just as often produced by cold, wind or steep exposed ground, and
+    # treating any caution as "wet" previously produced a waterproof shell
+    # on a freezing route with a reason claiming the conditions were wet.
+    # The condition engine's own wetness/precipitation factors are consulted
+    # as a second source, so snow reported by weather code is not lost.
+    # ------------------------------------------------------------------
+    rain_24h = _number(recent_rain.get("24h_mm"))
+    if rain_24h is None:
+        rain_24h = _number(recent_precip.get("24h_mm"))
+    current_precip = _number(current.get("precipitation"))
+    forecast_rain = _number(forecast.get("rain_mm"))
+    if forecast_rain is None:
+        forecast_rain = _number(forecast.get("precipitation_mm"))
+    forecast_prob = _number(
+        forecast.get("precipitation_probability_max")
+    )
+
+    condition_factors = {
+        _text(factor.get("factor")): factor
+        for factor in (condition.get("factors") or [])
+        if isinstance(factor, dict)
+    }
+
+    wet_factor = condition_factors.get("wetness")
+    precip_factor = condition_factors.get("precipitation")
+    snow_factor = condition_factors.get("snow")
+
+    # A factor is only evidence for its own state. The condition engine
+    # reports `wetness: dry` as well as `wetness: damp`, so the presence of
+    # a factor proves nothing on its own.
+    WET_STATES = {"damp", "wet", "saturated"}
+    ACTIVE_PRECIP_STATES = {"active", "likely_rain", "rain"}
+    wet_state = (
+        _text(wet_factor.get("state")) if wet_factor else ""
+    )
+    precip_state = (
+        _text(precip_factor.get("state")) if precip_factor else ""
+    )
+
+    precipitation_mm = 0.0
+    precipitation_seen = False
+    for value in (rain_24h, current_precip, forecast_rain):
+        if value is not None:
+            precipitation_seen = True
+            precipitation_mm = max(precipitation_mm, value)
+
+    # Rain protection needs rain evidence, not merely a temperature reading.
+    # A payload carrying rainfall but no temperature still means a wet route.
+    precipitation_evidence = (
+        precipitation_mm > 0.0
+        or (forecast_prob is not None and forecast_prob >= 50.0)
+        or wet_state in WET_STATES
+        or precip_state in ACTIVE_PRECIP_STATES
+    )
+    wet_condition = precipitation_evidence and (
+        wet_state in WET_STATES
+        or precip_state in ACTIVE_PRECIP_STATES
+        or precipitation_mm >= 1.0
+    )
+
+    # Snow may be reported as a measured depth, as a factor the condition
+    # engine derived from the weather code, or as neither.
+    snow_reported = (
+        snowfall is not None and snowfall > 0.0
+    ) or snow_factor is not None
+    snow_depth_cm = snowfall if snowfall is not None else 0.0
+
+    weather_known = temperature is not None or wind is not None
+    # Any measured weather field at all counts as weather evidence.
+    any_weather_known = weather_known or precipitation_seen or snow_reported
+
+    # A steep, sustained climb is the strongest single demand signal and is
+    # measured directly, so it is stated as a number rather than a platitude.
+    climb_evidence: list[str] = []
+    if gain is not None:
+        climb_evidence.append(f"{gain:.0f} m sampled ascent")
+    if max_slope is not None:
+        climb_evidence.append(f"{max_slope:.0f}% steepest sampled section")
+    climb_summary = " and ".join(climb_evidence)
+
+    steep = max_slope is not None and max_slope >= 30.0
+    sustained_climb = gain is not None and gain >= 400.0
+    long_route = distance >= 8.0
+    exposed = steep and (elevation_range or 0.0) >= 300.0
+
+    items: dict[str, dict[str, Any]] = {}
+
+    def offer(
+        need: str,
+        *,
+        tier: str,
+        item: str,
+        category: str,
+        reason: str,
+        evidence: list[str],
+        specific: bool = False,
+    ) -> None:
+        """
+        Add an item unless the same preparation need is already met.
+
+        ``specific=True`` means this variant is more precisely justified than
+        whatever already covers the need, so it replaces the existing wording
+        instead of adding a second line for the same thing.
+        """
+        if need in items:
+            existing = items[need]
+            # Keep the strongest tier and merge the supporting evidence.
+            if TIER_ORDER[tier] < TIER_ORDER[existing["priority"]]:
+                existing["priority"] = tier
+            for value in evidence:
+                if value not in existing["evidence"]:
+                    existing["evidence"].append(value)
+            if specific:
+                existing["item"] = item
+                existing["reason"] = reason
+            return
+        items[need] = {
+            "need": need,
+            "priority": tier,
+            "item": item,
+            "category": category,
+            "reason": reason,
+            "evidence": list(evidence),
+        }
+
+    # ---------------- BASELINE, JUSTIFIED BY THE ACTIVITY ----------------
+    # These two follow from selecting a mapped walking route at all. They are
+    # labelled as baseline rather than dressed up as trail-specific findings.
+    offer(
+        NEED_TRAIL_ACTIVITY,
+        tier="essential",
+        item="Broken-in trail shoes",
+        category="footwear",
+        reason=(
+            "The selected feature is a walked route, so footwear is the "
+            "baseline requirement. It is a general preparation item, not a "
+            "finding about this trail."
+        ),
+        evidence=["route is a walked OSM trail"],
+    )
+    offer(
+        NEED_NAVIGATION,
+        tier="essential",
+        item="Offline access to this route",
+        category="navigation",
+        reason=(
+            f"This is one real OSM route ("
+            f"{trail.get('osm_type') or 'feature'} "
+            f"{trail.get('osm_id')}); keeping it available covers the part "
+            f"of the route with no reception."
+        ),
+        evidence=["OSM identity is verified and stable"],
+    )
+
+    # ---------------- ACTIVITY-DRIVEN REQUIREMENTS ----------------
+    # The kind of trip changes what preparation is worth stating. Each item
+    # is justified by the recorded or measured signal that created it, and
+    # signals are read individually rather than from the winning label, so a
+    # long route that also climbs high gets both sets.
+    profile = classify_activity(trail, analysis)
+    max_elevation = _number(elevation.get("max_elevation_m"))
+    # A scattered network is judged by its largest piece, not its total.
+    trip_km, _ = continuous_distance_km(trail, analysis)
+
+    if trip_km is not None and trip_km >= MULTI_DAY_KM:
+        multi_day_evidence = [f"{trip_km:.0f} km of continuous route"]
         offer(
             NEED_OVERNIGHT,
             tier="recommended",

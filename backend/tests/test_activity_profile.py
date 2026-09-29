@@ -127,6 +127,56 @@ class ClassifyActivityTests(unittest.TestCase):
         self.assertTrue(profile.reasons)
 
 
+class ScatteredNetworkTests(unittest.TestCase):
+    """
+    "Core Paths" is 236 km in 140 pieces, the largest holding 5%. It is a
+    collection of local paths, not a 236 km trek, and must not be prepared for
+    as one.
+    """
+
+    NETWORK = {
+        "distance_km": 236.0,
+        "completeness": {"status": "separate_pieces", "main_chain_share": 0.05},
+    }
+
+    def test_a_scattered_network_is_not_a_multi_day_trek(self) -> None:
+        profile = classify_activity(_trail(), self.NETWORK)
+        self.assertEqual(profile.type, ActivityType.DAY_HIKE)
+
+    def test_a_network_gets_no_overnight_or_resupply_plan(self) -> None:
+        weather = {"current": {"temperature": 18.0, "wind_speed": 6.0}}
+        trail = _trail()
+        condition = condition_likelihood(trail, trail["terrain"], weather)
+        needs = {
+            item["need"]
+            for item in gear_recommendations(
+                trail, self.NETWORK, weather, condition
+            )["items"]
+        }
+        self.assertNotIn("overnight", needs)
+        self.assertNotIn("resupply", needs)
+
+    def test_a_long_route_with_gaps_is_still_a_multi_day_trek(self) -> None:
+        analysis = {
+            "distance_km": 172.0,
+            "completeness": {"status": "gaps", "main_chain_share": 0.93},
+        }
+        self.assertEqual(
+            classify_activity(_trail(), analysis).type,
+            ActivityType.MULTI_DAY_TREK,
+        )
+
+    def test_the_largest_piece_can_still_be_a_multi_day_trek(self) -> None:
+        # 236 km of pieces, but the biggest piece alone is 118 km.
+        analysis = {
+            "distance_km": 236.0,
+            "completeness": {"status": "separate_pieces", "main_chain_share": 0.5},
+        }
+        profile = classify_activity(_trail(), analysis)
+        self.assertEqual(profile.type, ActivityType.MULTI_DAY_TREK)
+        self.assertTrue(any("118" in reason for reason in profile.reasons))
+
+
 class GearByActivityTests(unittest.TestCase):
     def _gear(self, trail: dict, distance: float = 6.0) -> dict:
         weather = {"current": {"temperature": 18.0, "wind_speed": 6.0}}
