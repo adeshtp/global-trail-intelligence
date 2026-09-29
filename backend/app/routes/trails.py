@@ -33,7 +33,11 @@ from app.services.products import discover_products
 from app.services.route_complexity import route_complexity
 from app.services.rate_limit import enrichment_limiter, intelligence_limiter
 from app.services.assistant import answer_trail_question
-from app.services.weather import get_weather
+from app.services.weather import (
+    get_route_weather,
+    get_weather,
+    select_route_points,
+)
 
 
 router = APIRouter(
@@ -721,14 +725,29 @@ async def get_selected_trail_intelligence(
             detail="Selected geometry has no representative midpoint",
         )
 
-    weather_result, elevation_result = await asyncio.gather(
-        get_weather(
-            latitude=midpoint[1],
-            longitude=midpoint[0],
-        ),
+    # Elevation is read first because it says where along the route the
+    # weather should be read: start, highest, lowest, end and middle, each at
+    # its own height. A route with only one distinct place on it, or with no
+    # profile, is weathered at its midpoint as before.
+    (elevation_result,) = await asyncio.gather(
         get_elevation_profile(analysis["geometry"]),
         return_exceptions=True,
     )
+    route_points = (
+        []
+        if isinstance(elevation_result, Exception)
+        else select_route_points(elevation_result.get("profile") or [])
+    )
+    try:
+        if len(route_points) > 1:
+            weather_result = await get_route_weather(route_points)
+        else:
+            weather_result = await get_weather(
+                latitude=midpoint[1],
+                longitude=midpoint[0],
+            )
+    except Exception as exc:
+        weather_result = exc
 
     provider_status: dict[str, str] = {}
     if isinstance(weather_result, Exception):
@@ -816,8 +835,16 @@ async def get_selected_trail_intelligence(
             "basis": (
                 "Representative midpoint of the selected route geometry, "
                 "not the originally searched place."
+                + (
+                    f" Conditions are the worst case across "
+                    f"{weather['sample_count']} points sampled along the "
+                    f"route, each at its own elevation."
+                    if weather and weather.get("aggregation") == "worst_case"
+                    else ""
+                )
             ),
         },
+        "weather_samples": (weather or {}).get("samples") or [],
         "analysis": analysis_response,
         "terrain": terrain,
         "weather": weather,

@@ -256,6 +256,19 @@ type WeatherResponse = {
     rain_mm?: number | null;
     precipitation_probability_max?: number | null;
   };
+  aggregation?: "worst_case";
+  sample_count?: number;
+  samples?: Array<{
+    labels: string[];
+    latitude: number;
+    longitude: number;
+    elevation_m: number;
+    temperature: number | null;
+    wind_speed: number | null;
+    snowfall: number | null;
+    precipitation: number | null;
+    weather_condition: string | null;
+  }>;
 };
 
 
@@ -3377,15 +3390,50 @@ function ExplorePageContent() {
                     )}
 
 
+                    {weather.aggregation === "worst_case" &&
+                    weather.samples &&
+                    weather.samples.length > 1 ? (
+                      <div className="mt-3 rounded-xl border border-white/[0.06] bg-white/[0.02] px-3 py-2.5">
+                        <p className="text-[10px] leading-5 text-white/40">
+                          The figures above are the harshest of{" "}
+                          {weather.samples.length} points along the route, each
+                          read at its own elevation.
+                        </p>
+                        <ul className="mt-1.5 space-y-0.5">
+                          {weather.samples.map((sample) => (
+                            <li
+                              key={`${sample.latitude}-${sample.longitude}-${sample.elevation_m}`}
+                              className="text-[11px] leading-5 text-white/50"
+                            >
+                              <span className="capitalize text-white/70">
+                                {sample.labels.join(" / ")}
+                              </span>
+                              {`, ${Math.round(sample.elevation_m)} m: `}
+                              {sample.temperature !== null
+                                ? `${sample.temperature.toFixed(1)} °C`
+                                : "—"}
+                              {sample.wind_speed !== null
+                                ? `, wind ${sample.wind_speed.toFixed(0)} km/h`
+                                : ""}
+                              {sample.weather_condition
+                                ? `, ${sample.weather_condition.toLowerCase()}`
+                                : ""}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+
                     <p className="mt-3 text-[10px] leading-5 text-white/25">
                       Weather source: {weather.source}
-                      {" · measured at "}
-                      {weatherPointLabel(
-                        selectedIntelligence
-                          ? selectedIntelligence.weather_coordinate
-                          : undefined,
-                      )}
-                      {" — a point on the selected route, not the place you searched."}
+                      {weather.aggregation === "worst_case"
+                        ? " · read along the selected route"
+                        : ` · measured at ${weatherPointLabel(
+                            selectedIntelligence
+                              ? selectedIntelligence.weather_coordinate
+                              : undefined,
+                          )}`}
+                      {" — on the selected route, not the place you searched."}
                     </p>
 
                   </div>
