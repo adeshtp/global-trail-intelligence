@@ -292,7 +292,9 @@ class ActivitySignalsReachClassifierTests(unittest.TestCase):
         from app.routes import trails
 
         with patch.object(
-            trails, "get_way", new=AsyncMock(return_value=self._way())
+            trails,
+            "get_ways",
+            new=AsyncMock(return_value={7: self._way()}),
         ):
             members = asyncio.run(
                 trails._verified_member_trails({"member_way_ids": [7]})

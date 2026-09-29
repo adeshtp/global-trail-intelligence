@@ -2298,24 +2298,7 @@ LIMIT 1
     return relation
 
 
-async def get_way(
-    way_id: int,
-) -> PostpassWay | None:
-    """Fetch one named OSM way with its real Postpass geometry."""
-    try:
-        way_id = int(way_id)
-    except (TypeError, ValueError):
-        return None
-    if way_id <= 0:
-        return None
-
-    cache_key = ("way", way_id)
-    if _cache_has(cache_key):
-        return _cache_get(cache_key)
-
-    sql = f"""
-SELECT
-    l.osm_id AS way_id,
+_WAY_COLUMNS = """    l.osm_id AS way_id,
     l.tags->>'name' AS name,
     l.tags->>'name:en' AS name_en,
     l.tags->>'int_name' AS int_name,
@@ -2340,7 +2323,110 @@ SELECT
     ST_NPoints(l.geom) AS point_count,
     ROUND((l.length_m / 1000.0)::numeric, 3) AS length_km,
     ST_AsGeoJSON(l.geom)::json AS geometry
-FROM postpass_line AS l
+"""
+
+# Ways fetched per query. Each row carries its full geometry, so this keeps
+# one response comfortably small while a long route costs a handful of queries.
+WAY_BULK_CHUNK = 200
+
+
+async def get_ways(way_ids: Any) -> dict[int, PostpassWay]:
+    """
+    Fetch many named OSM ways with real Postpass geometry, in bulk.
+
+    A long route has hundreds of member ways; fetching each with its own query
+    made selecting one take minutes. Ways already seen are served from the
+    same cache ``get_way`` uses, the rest are fetched ``WAY_BULK_CHUNK`` at a
+    time, and a way Postpass does not hold is simply absent from the result.
+    If a chunk's query fails, its ways are looked up one by one through the
+    Overpass fallback, as ``get_way`` would.
+    """
+    wanted: list[int] = []
+    for raw in way_ids:
+        try:
+            way_id = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if way_id > 0 and way_id not in wanted:
+            wanted.append(way_id)
+
+    found: dict[int, PostpassWay] = {}
+    missing: list[int] = []
+    for way_id in wanted:
+        key = ("way", way_id)
+        if _cache_has(key):
+            cached = _cache_get(key)
+            if cached is not None:
+                found[way_id] = cached
+        else:
+            missing.append(way_id)
+
+    semaphore = asyncio.Semaphore(3)
+
+    async def fetch(chunk: list[int]) -> dict[int, PostpassWay]:
+        listed = ", ".join(str(way_id) for way_id in chunk)
+        sql = f"""
+SELECT
+{_WAY_COLUMNS}FROM postpass_line AS l
+WHERE l.osm_type = 'W'
+  AND l.osm_id IN ({listed})
+  AND l.tags ? 'name'
+"""
+        try:
+            async with semaphore:
+                rows = await _execute_sql(sql)
+        except Exception as exc:
+            logger.warning(
+                "Postpass bulk way lookup failed for %d ways; "
+                "using Overpass fallback: %s",
+                len(chunk),
+                exc,
+            )
+            recovered: dict[int, PostpassWay] = {}
+            for way_id in chunk:
+                try:
+                    way = await overpass_fallback.overpass_get_way(way_id)
+                except Exception:
+                    way = None
+                if way is not None:
+                    recovered[way_id] = way
+            return recovered
+        chunk_found: dict[int, PostpassWay] = {}
+        for row in rows:
+            way = _way_from_row(row)
+            if way is not None:
+                chunk_found[way.way_id] = way
+        for way_id in chunk:
+            _cache_set(("way", way_id), chunk_found.get(way_id))
+        return chunk_found
+
+    chunks = [
+        missing[i : i + WAY_BULK_CHUNK]
+        for i in range(0, len(missing), WAY_BULK_CHUNK)
+    ]
+    for part in await asyncio.gather(*(fetch(chunk) for chunk in chunks)):
+        found.update(part)
+    return found
+
+
+async def get_way(
+    way_id: int,
+) -> PostpassWay | None:
+    """Fetch one named OSM way with its real Postpass geometry."""
+    try:
+        way_id = int(way_id)
+    except (TypeError, ValueError):
+        return None
+    if way_id <= 0:
+        return None
+
+    cache_key = ("way", way_id)
+    if _cache_has(cache_key):
+        return _cache_get(cache_key)
+
+    sql = f"""
+SELECT
+{_WAY_COLUMNS}FROM postpass_line AS l
 WHERE l.osm_type = 'W'
   AND l.osm_id = {way_id}
   AND l.tags ? 'name'

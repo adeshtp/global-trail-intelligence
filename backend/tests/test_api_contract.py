@@ -668,6 +668,9 @@ class IntelligenceContractTests(unittest.TestCase):
         async def _get_way(way_id: int) -> postpass.PostpassWay:
             return _member_way(int(way_id))
 
+        async def _get_ways(way_ids) -> dict:
+            return {int(i): _member_way(int(i)) for i in way_ids}
+
         trail = {
             "trail_id": "relation:9001",
             "osm_type": "relation",
@@ -686,6 +689,8 @@ class IntelligenceContractTests(unittest.TestCase):
             AsyncMock(return_value=relation),
         ), patch(
             "app.routes.trails.get_way", _get_way
+        ), patch(
+            "app.routes.trails.get_ways", _get_ways
         ), patch(
             "app.routes.trails.get_weather",
             AsyncMock(return_value=WEATHER),

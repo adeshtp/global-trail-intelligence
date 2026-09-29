@@ -21,6 +21,7 @@ from app.services.elevation import get_elevation_profile
 from app.services.postpass import (
     get_relation,
     get_way,
+    get_ways,
     measure_geometry_completeness,
 )
 from app.services.intelligence import (
@@ -522,12 +523,15 @@ async def _verified_member_trails(
         ]
     except (TypeError, ValueError):
         return []
+    # One bulk lookup for every member, not one query per way: a long route has
+    # hundreds of members and fetching them one by one took minutes.
+    try:
+        ways = await get_ways(ordered_ids)
+    except Exception:
+        return []
     member_trails: list[dict[str, Any]] = []
     for member_id in ordered_ids:
-        try:
-            way = await get_way(member_id)
-        except Exception:
-            continue
+        way = ways.get(member_id)
         if way is None or not way.geometry:
             continue
         member_trails.append(
