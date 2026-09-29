@@ -109,6 +109,17 @@ MAX_TILES = max(
     1,
     min(int(os.getenv("MAX_DISCOVERY_TILES", "40")), 64),
 )
+# Queries a search may spend re-querying capped tiles as quadrants, four per
+# split. Deliberately separate from the tile grid: a region wide enough to fill
+# MAX_TILES used to leave only what the grid left over (4 queries, one split),
+# so a live Switzerland search stopped after 4 splits with 59 areas still cut.
+# This bounds a pathological search; the time budget below is what governs a
+# normal one.
+MAX_SPLIT_QUERIES = max(
+    4,
+    min(int(os.getenv("MAX_DISCOVERY_SPLIT_QUERIES", "200")), 1000),
+)
+
 # The longest a search may keep starting new provider queries. Past it, no new
 # tile is queried and no capped tile is split further; what was skipped or cut
 # is reported in `coverage`, and the results found so far are returned. A query
@@ -881,6 +892,14 @@ async def _expand_truncated(
             return None
 
         async with semaphore:
+            # A query that waited for a slot may have waited past the deadline
+            # (hundreds can queue at once); it is then not run, and the area
+            # is reported as still cut.
+            if deadline is not None and time.monotonic() >= deadline:
+                skipped = _TileHarvest()
+                skipped.relations_truncated = int(need_relations)
+                skipped.ways_truncated = int(need_ways)
+                return skipped
             relations, ways = await asyncio.gather(
                 discover_relations_in_bbox(quadrant, limit=relation_limit)
                 if need_relations
@@ -1621,8 +1640,17 @@ def _named_way_evidence(
     if not name:
         return False, 0.0, ["unnamed feature"], "none"
     # A bare number or single character is a mapper artifact or a survey
-    # marker, never a trail identity.
-    if len(name) < 3 or not any(ch.isalpha() for ch in name):
+    # marker, never a trail identity, unless a recorded grade or visibility
+    # says it is a marked path: the numbered paths of the Vallorcine valley
+    # ("16", "23") carry sac_scale=mountain_hiking and are real trails. The
+    # name is kept exactly as mapped; nothing is invented for it. Only a short
+    # trail number qualifies, so an id or a phone number never does.
+    numbered_trail = bool(
+        re.fullmatch(r"\d{1,4}[a-z]?", name) and (sac or visibility)
+    )
+    if not numbered_trail and (
+        len(name) < 3 or not any(ch.isalpha() for ch in name)
+    ):
         return False, 0.0, ["non-descriptive name"], "none"
     if way.length_km <= 0.0:
         return False, 0.0, ["zero-length geometry"], "none"
@@ -3162,9 +3190,8 @@ async def _run_discovery(
                 "splits": 0,
             }
             semaphore = asyncio.Semaphore(TILE_CONCURRENCY)
-            # The grid already spends len(tiles) of the tile budget; capped
-            # tiles may split further only inside what is left.
-            budget = _QueryBudget(max(0, MAX_TILES - len(tiles)))
+            # Splits have their own budget, not what the grid leaves over.
+            budget = _QueryBudget(MAX_SPLIT_QUERIES)
 
             async def _one(
                 tile: tuple[float, float, float, float],
@@ -3339,7 +3366,7 @@ async def _run_discovery(
         way_rows=None if isinstance(way_result, BaseException) else way_result,
         relation_limit=single_tile_limits[0],
         way_limit=single_tile_limits[1],
-        budget=_QueryBudget(MAX_TILES - 1),
+        budget=_QueryBudget(MAX_SPLIT_QUERIES),
         semaphore=asyncio.Semaphore(TILE_CONCURRENCY),
         deadline=deadline,
     )

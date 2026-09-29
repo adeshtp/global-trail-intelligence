@@ -236,7 +236,8 @@ class CoverageReportsTruncationTests(unittest.TestCase):
         coverage = payload["coverage"]
         self.assertGreaterEqual(coverage["rows_truncated"]["relations"], 1)
         self.assertEqual(coverage["rows_truncated"]["ways"], 0)
-        self.assertLessEqual(len(calls), discovery.MAX_TILES)
+        # One query for the tile, then at most the split budget.
+        self.assertLessEqual(len(calls), 1 + discovery.MAX_SPLIT_QUERIES)
 
     def _coverage(self, tile_plan: dict) -> dict:
         relation = postpass._relation_from_row(_relation_row(1))
@@ -287,6 +288,154 @@ class CoverageReportsTruncationTests(unittest.TestCase):
         self.assertFalse(cut["coverage_complete"])
         self.assertEqual(cut["rows_truncated"]["relations"], 2)
         self.assertEqual(cut["tiles_split"], 3)
+
+
+class DeadlineWhileQueuedTests(unittest.TestCase):
+    """
+    The deadline was checked before splitting but not when a queued query
+    finally got a slot. With splits plentiful, ~200 quadrant queries were
+    queued early and ran long after the 60 s budget: a live Switzerland search
+    took 233 s.
+    """
+
+    def test_queued_quadrants_do_not_run_after_the_deadline(self) -> None:
+        import time
+
+        calls: list[Tile] = []
+
+        async def relations(tile: Tile, *, limit: int) -> BboxRows:
+            calls.append(tile)
+            return BboxRows()
+
+        async def scenario() -> discovery._TileHarvest:
+            semaphore = asyncio.Semaphore(1)
+            await semaphore.acquire()  # every slot is busy
+            truncated = BboxRows()
+            truncated.truncated = True
+            task = asyncio.create_task(
+                discovery._expand_truncated(
+                    (0.0, 0.0, 1.0, 1.0),
+                    relation_rows=truncated,
+                    way_rows=None,
+                    relation_limit=100,
+                    way_limit=100,
+                    budget=discovery._QueryBudget(50),
+                    semaphore=semaphore,
+                    deadline=time.monotonic() + 0.1,
+                )
+            )
+            await asyncio.sleep(0.4)  # the deadline passes while they wait
+            semaphore.release()
+            return await task
+
+        with patch.object(
+            discovery, "discover_relations_in_bbox", new=relations
+        ):
+            harvest = asyncio.run(scenario())
+
+        self.assertEqual(calls, [])
+        self.assertGreaterEqual(harvest.relations_truncated, 1)
+
+    def test_before_the_deadline_queued_quadrants_still_run(self) -> None:
+        import time
+
+        calls: list[Tile] = []
+
+        async def relations(tile: Tile, *, limit: int) -> BboxRows:
+            calls.append(tile)
+            return BboxRows()
+
+        async def scenario() -> discovery._TileHarvest:
+            truncated = BboxRows()
+            truncated.truncated = True
+            return await discovery._expand_truncated(
+                (0.0, 0.0, 1.0, 1.0),
+                relation_rows=truncated,
+                way_rows=None,
+                relation_limit=100,
+                way_limit=100,
+                budget=discovery._QueryBudget(50),
+                semaphore=asyncio.Semaphore(1),
+                deadline=time.monotonic() + 60,
+            )
+
+        with patch.object(
+            discovery, "discover_relations_in_bbox", new=relations
+        ):
+            harvest = asyncio.run(scenario())
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(harvest.relations_truncated, 0)
+
+
+class BroadAreaSplitBudgetTests(unittest.TestCase):
+    """
+    A region wide enough to fill the tile grid used to leave splits with
+    whatever MAX_TILES had left (4 queries, one split), so a live Switzerland
+    search stopped splitting after 4 splits and left 59 areas cut. Splits have
+    their own budget; the time budget bounds them.
+    """
+
+    CAPPED = {(0.0, 0.0), (2.0, 3.0), (4.0, 5.0)}
+
+    def _run(self):
+        calls: list[Tile] = []
+
+        async def relations(tile: Tile, *, limit: int) -> BboxRows:
+            calls.append(tile)
+            rows = BboxRows()
+            span = tile[2] - tile[0]
+            # Only three full-size tiles are dense; their quadrants are not.
+            rows.truncated = span > 0.99 and (tile[0], tile[1]) in self.CAPPED
+            return rows
+
+        async def no_ways(tile: Tile, *, limit: int) -> BboxRows:
+            return BboxRows()
+
+        async def semantic(*args: object, **kwargs: object):
+            return TrailDiscoveryResult(
+                place="Region",
+                trails=[],
+                agent_available=False,
+                provider="searxng",
+                provider_status="unavailable",
+            )
+
+        async def run():
+            return await discovery._run_discovery(
+                latitude=3.0,
+                longitude=3.0,
+                place="Region",
+                scope="area",
+                search_bbox=(0.0, 0.0, 6.0, 6.0),
+                bbox_source="requested_bbox",
+                include_semantic=False,
+            )
+
+        with patch.object(
+            discovery, "discover_relations_in_bbox", new=relations
+        ), patch.object(
+            discovery, "discover_named_trail_ways_in_bbox", new=no_ways
+        ), patch.object(
+            discovery, "discover_trail_candidates", new=semantic
+        ), patch.object(
+            discovery, "find_relations_by_names", new=AsyncMock(return_value={})
+        ):
+            payload = asyncio.run(run())
+        return payload["coverage"], calls
+
+    def test_the_grid_fills_the_tile_limit(self) -> None:
+        tiles, _ = discovery._tile_plan((0.0, 0.0, 6.0, 6.0))
+        self.assertGreaterEqual(len(tiles), discovery.MAX_TILES - 4)
+
+    def test_every_dense_tile_of_a_broad_area_is_split(self) -> None:
+        coverage, calls = self._run()
+        self.assertEqual(coverage["tiles_split"], len(self.CAPPED))
+        self.assertEqual(coverage["rows_truncated"]["relations"], 0)
+        quadrant_queries = [t for t in calls if t[2] - t[0] < 0.6]
+        self.assertEqual(len(quadrant_queries), 4 * len(self.CAPPED))
+
+    def test_splits_have_a_bound_of_their_own(self) -> None:
+        self.assertGreater(discovery.MAX_SPLIT_QUERIES, 4)
 
 
 if __name__ == "__main__":
