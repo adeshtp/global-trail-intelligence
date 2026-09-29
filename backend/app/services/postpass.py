@@ -1073,6 +1073,18 @@ def _match_score(
 # ============================================================
 
 
+class BboxRows(list):
+    """
+    Rows returned for one bounding box, plus whether the query was capped.
+
+    ``truncated`` is True when the query returned as many rows as its
+    ``LIMIT``, which means rows may exist that were never seen. It is a plain
+    list otherwise, so callers that only iterate are unaffected.
+    """
+
+    truncated: bool = False
+
+
 async def discover_relations_in_bbox(
     bbox: tuple[
         float,
@@ -1082,7 +1094,7 @@ async def discover_relations_in_bbox(
     ],
     *,
     limit: int = 100,
-) -> list[PostpassRelation]:
+) -> BboxRows:
     """
     Discover named hiking/foot route relations with rendered geometry
     overlapping the requested geographic area.
@@ -1197,6 +1209,7 @@ ORDER BY
         THEN 0
         ELSE 1
     END,
+    l.length_m DESC NULLS LAST,
     lower(COALESCE(r.tags->>'name', r.tags->>'name:en', r.tags->>'int_name', r.tags->>'official_name', r.tags->>'alt_name', r.tags->>'loc_name', r.tags->>'short_name')),
     r.id
 LIMIT {safe_limit}
@@ -1221,9 +1234,7 @@ LIMIT {safe_limit}
             limit=safe_limit,
         )
 
-    relations: list[
-        PostpassRelation
-    ] = []
+    relations = BboxRows()
 
     for row in rows:
         relation = _relation_from_row(
@@ -1241,6 +1252,10 @@ LIMIT {safe_limit}
         relations.append(
             relation
         )
+
+    # Judged on the rows the query returned, not the ones that survived the
+    # checks above: a capped query is capped even if some rows were unusable.
+    relations.truncated = len(rows) >= safe_limit
 
     _cache_set(
         cache_key,
@@ -1350,7 +1365,7 @@ async def discover_named_trail_ways_in_bbox(
     ],
     *,
     limit: int = 2000,
-) -> list[PostpassWay]:
+) -> BboxRows:
     """
     Discover named, trail-capable OSM ways with real Postpass geometry.
 
@@ -1462,6 +1477,7 @@ ORDER BY
         WHEN l.tags->>'highway' IN ('footway', 'track') THEN 5
         ELSE 6
     END,
+    l.length_m DESC NULLS LAST,
     lower(l.tags->>'name'),
     l.osm_id
 LIMIT {safe_limit}
@@ -1480,7 +1496,7 @@ LIMIT {safe_limit}
             limit=safe_limit,
         )
 
-    ways: list[PostpassWay] = []
+    ways = BboxRows()
 
     for row in rows:
         way = _way_from_row(row)
@@ -1489,6 +1505,8 @@ LIMIT {safe_limit}
             continue
 
         ways.append(way)
+
+    ways.truncated = len(rows) >= safe_limit
 
     _cache_set(
         cache_key,

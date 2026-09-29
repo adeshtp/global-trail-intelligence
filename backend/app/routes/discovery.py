@@ -9,6 +9,7 @@ import os
 import re
 import unicodedata
 from collections import defaultdict
+from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Any
 
@@ -757,6 +758,154 @@ def _tile_plan(
         "tiles_skipped": 0,
     }
     return tiles, plan
+
+
+# A capped tile is split no finer than this, so rows that all share one
+# location cannot be halved forever.
+MIN_SPLIT_SPAN_DEG = 0.02
+
+
+@dataclass
+class _QueryBudget:
+    """Tile queries still allowed for this search, shared by every tile."""
+
+    remaining: int
+
+    def take(self, count: int) -> bool:
+        if count > self.remaining:
+            return False
+        self.remaining -= count
+        return True
+
+
+@dataclass
+class _TileHarvest:
+    """Rows found by re-querying capped tiles, and how much is still cut."""
+
+    ways: list[Any] = field(default_factory=list)
+    relations: list[Any] = field(default_factory=list)
+    ways_truncated: int = 0
+    relations_truncated: int = 0
+    splits: int = 0
+
+    def merge(self, other: "_TileHarvest") -> None:
+        self.ways.extend(other.ways)
+        self.relations.extend(other.relations)
+        self.ways_truncated += other.ways_truncated
+        self.relations_truncated += other.relations_truncated
+        self.splits += other.splits
+
+
+def _quadrants(
+    tile: tuple[float, float, float, float],
+) -> list[tuple[float, float, float, float]]:
+    west, south, east, north = tile
+    mid_lon = (west + east) / 2
+    mid_lat = (south + north) / 2
+    return [
+        (west, south, mid_lon, mid_lat),
+        (mid_lon, south, east, mid_lat),
+        (west, mid_lat, mid_lon, north),
+        (mid_lon, mid_lat, east, north),
+    ]
+
+
+async def _expand_truncated(
+    tile: tuple[float, float, float, float],
+    *,
+    relation_rows: Any,
+    way_rows: Any,
+    relation_limit: int,
+    way_limit: int,
+    budget: _QueryBudget,
+    semaphore: asyncio.Semaphore,
+) -> _TileHarvest:
+    """
+    Re-query a capped tile as four quadrants, recursively, within the budget.
+
+    A query that returns as many rows as its LIMIT has cut rows the search
+    never saw. Splitting the tile gives each part its own LIMIT, so dense
+    areas are read in full instead of being truncated by name order. Only the
+    kind that was capped is re-queried. The rows passed in are not returned
+    again; only what the quadrants add is.
+
+    Whatever cannot be resolved, because the shared budget is spent or the
+    tile is already at the minimum size, is counted in ``*_truncated`` and
+    reported, never hidden. A failed re-query counts the same way: its rows
+    are unknown.
+    """
+    need_relations = bool(getattr(relation_rows, "truncated", False))
+    need_ways = bool(getattr(way_rows, "truncated", False))
+    harvest = _TileHarvest()
+    if not (need_relations or need_ways):
+        return harvest
+
+    west, south, east, north = tile
+    half_span = max(north - south, east - west) / 2
+    if half_span < MIN_SPLIT_SPAN_DEG or not budget.take(4):
+        harvest.relations_truncated += int(need_relations)
+        harvest.ways_truncated += int(need_ways)
+        return harvest
+    harvest.splits += 1
+
+    async def _quadrant(
+        quadrant: tuple[float, float, float, float],
+    ) -> _TileHarvest:
+        async def _skip() -> None:
+            return None
+
+        async with semaphore:
+            relations, ways = await asyncio.gather(
+                discover_relations_in_bbox(quadrant, limit=relation_limit)
+                if need_relations
+                else _skip(),
+                discover_named_trail_ways_in_bbox(quadrant, limit=way_limit)
+                if need_ways
+                else _skip(),
+                return_exceptions=True,
+            )
+        found = _TileHarvest()
+        for rows, kind in ((relations, "relations"), (ways, "ways")):
+            if isinstance(rows, BaseException):
+                logger.warning(
+                    "Re-query of a capped %s tile failed: %s", kind, rows
+                )
+                setattr(found, f"{kind}_truncated", 1)
+            elif rows is not None:
+                getattr(found, kind).extend(rows)
+        child = await _expand_truncated(
+            quadrant,
+            relation_rows=None if isinstance(relations, BaseException) else relations,
+            way_rows=None if isinstance(ways, BaseException) else ways,
+            relation_limit=relation_limit,
+            way_limit=way_limit,
+            budget=budget,
+            semaphore=semaphore,
+        )
+        found.merge(child)
+        return found
+
+    for part in await asyncio.gather(
+        *(_quadrant(quadrant) for quadrant in _quadrants(tile))
+    ):
+        harvest.merge(part)
+    return harvest
+
+
+def _dedupe_rows(rows: list[Any], attribute: str) -> list[Any]:
+    """
+    Keep the first row per OSM id.
+
+    A way or relation that crosses a tile boundary appears in both tiles.
+    OSM identity, not position, decides identity, so the first row wins.
+    Nothing is merged or synthesised.
+    """
+    unique: dict[int, Any] = {}
+    for row in rows:
+        row_id = getattr(row, attribute, None)
+        if isinstance(row_id, int):
+            unique.setdefault(row_id, row)
+    return list(unique.values())
 
 
 def _geometry_segments(
@@ -2948,8 +3097,18 @@ async def _run_discovery(
         async def _query_tiles() -> tuple[list[Any], list[Any], dict[str, int]]:
             way_hits: list[Any] = []
             relation_hits: list[Any] = []
-            counters = {"queried": 0, "failed": 0, "skipped": 0}
+            counters = {
+                "queried": 0,
+                "failed": 0,
+                "skipped": 0,
+                "relations_truncated": 0,
+                "ways_truncated": 0,
+                "splits": 0,
+            }
             semaphore = asyncio.Semaphore(TILE_CONCURRENCY)
+            # The grid already spends len(tiles) of the tile budget; capped
+            # tiles may split further only inside what is left.
+            budget = _QueryBudget(max(0, MAX_TILES - len(tiles)))
 
             async def _one(
                 tile: tuple[float, float, float, float],
@@ -2977,6 +3136,28 @@ async def _run_discovery(
                     way_hits.extend(way_rows)
                 if not isinstance(relation_rows, BaseException):
                     relation_hits.extend(relation_rows)
+                extra = await _expand_truncated(
+                    tile,
+                    relation_rows=(
+                        None
+                        if isinstance(relation_rows, BaseException)
+                        else relation_rows
+                    ),
+                    way_rows=(
+                        None
+                        if isinstance(way_rows, BaseException)
+                        else way_rows
+                    ),
+                    relation_limit=per_tile_relations,
+                    way_limit=per_tile_ways,
+                    budget=budget,
+                    semaphore=semaphore,
+                )
+                way_hits.extend(extra.ways)
+                relation_hits.extend(extra.relations)
+                counters["relations_truncated"] += extra.relations_truncated
+                counters["ways_truncated"] += extra.ways_truncated
+                counters["splits"] += extra.splits
 
             for batch in (
                 tiles[i : i + TILE_CONCURRENCY * 2]
@@ -2999,28 +3180,20 @@ async def _run_discovery(
         if isinstance(tile_way_rows, BaseException):
             way_result = []
         else:
-            # A way that crosses a tile boundary appears in two tiles. OSM
-            # identity, not position, decides identity, so the first row wins
-            # and duplicates are dropped. Nothing is merged or synthesised.
-            deduped: dict[int, Any] = {}
-            for row in tile_way_rows:
-                way_id = getattr(row, "way_id", None)
-                if isinstance(way_id, int):
-                    deduped.setdefault(way_id, row)
-            way_result = list(deduped.values())
+            way_result = _dedupe_rows(tile_way_rows, "way_id")
 
         if isinstance(tile_relation_rows, BaseException):
             relation_result = []
         else:
-            deduped_relations: dict[int, Any] = {}
-            for row in tile_relation_rows:
-                relation_id = getattr(row, "relation_id", None)
-                if isinstance(relation_id, int):
-                    deduped_relations.setdefault(relation_id, row)
-            relation_result = list(deduped_relations.values())
+            relation_result = _dedupe_rows(tile_relation_rows, "relation_id")
 
         tile_plan["tiles_queried"] = counters["queried"]
         tile_plan["tiles_failed"] = counters["failed"]
+        tile_plan["rows_truncated"] = {
+            "relations": counters["relations_truncated"],
+            "ways": counters["ways_truncated"],
+        }
+        tile_plan["tiles_split"] = counters["splits"]
         tile_plan["tiles_skipped"] = len(tiles) - counters["queried"]
         if tile_plan["tiles_skipped"] > 0:
             logger.warning(
@@ -3087,6 +3260,38 @@ async def _run_discovery(
     results = list(gathered)
     agent_result = results.pop(0) if agent_task is not None else None
     relation_result, way_result = results
+
+    # The one tile may itself be capped. Split it inside the tile budget so a
+    # dense place is read in full, and report whatever is still cut.
+    single_tile_limits = (
+        (AREA_RELATION_ROW_LIMIT, AREA_WAY_ROW_LIMIT)
+        if scope == "area"
+        else (200, 2000)
+    )
+    extra = await _expand_truncated(
+        search_bbox,
+        relation_rows=(
+            None
+            if isinstance(relation_result, BaseException)
+            else relation_result
+        ),
+        way_rows=None if isinstance(way_result, BaseException) else way_result,
+        relation_limit=single_tile_limits[0],
+        way_limit=single_tile_limits[1],
+        budget=_QueryBudget(MAX_TILES - 1),
+        semaphore=asyncio.Semaphore(TILE_CONCURRENCY),
+    )
+    if extra.relations:
+        relation_result = _dedupe_rows(
+            [*relation_result, *extra.relations], "relation_id"
+        )
+    if extra.ways:
+        way_result = _dedupe_rows([*way_result, *extra.ways], "way_id")
+    tile_plan["rows_truncated"] = {
+        "relations": extra.relations_truncated,
+        "ways": extra.ways_truncated,
+    }
+    tile_plan["tiles_split"] = extra.splits
 
     if agent_result is None:
         semantic_result = TrailDiscoveryResult(
@@ -3420,6 +3625,12 @@ async def _assemble_discovery_result(
     tiles_total = int(tile_plan.get("tiles_total", 1))
     tiles_queried = int(tile_plan.get("tiles_queried", 1))
     tiles_skipped = int(tile_plan.get("tiles_skipped", 0))
+    rows_truncated = {
+        "relations": int(
+            (tile_plan.get("rows_truncated") or {}).get("relations", 0)
+        ),
+        "ways": int((tile_plan.get("rows_truncated") or {}).get("ways", 0)),
+    }
     no_provider_data = (
         providers_answered
         and provider_rows == 0
@@ -3553,12 +3764,18 @@ async def _assemble_discovery_result(
             "tiles_queried": tiles_queried,
             "tiles_failed": int(tile_plan.get("tiles_failed", 0)),
             "tiles_skipped": tiles_skipped,
+            # Areas whose query still returned as many rows as its cap after
+            # every allowed split. Rows there may exist that were never seen.
+            "rows_truncated": rows_truncated,
+            "tiles_split": int(tile_plan.get("tiles_split", 0)),
             # A search that returned no provider rows did not achieve
-            # coverage, and neither did one whose provider failed outright.
+            # coverage, and neither did one whose provider failed outright,
+            # or one that still had rows cut off.
             "coverage_complete": (
                 tiles_skipped == 0
                 and not no_provider_data
                 and not provider_failed
+                and not any(rows_truncated.values())
             ),
             "provider_returned_no_rows": no_provider_data,
             # Distinguishes "the source was asked and had nothing" from "the
