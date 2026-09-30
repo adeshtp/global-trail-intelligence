@@ -12,7 +12,7 @@ export default function ExploreHeader({
     <>
       <header className="border-b border-white/[0.06]">
 
-        <div className="mx-auto flex max-w-[1440px] items-center justify-between px-6 py-6 md:px-10 lg:px-14">
+        <div className="mx-auto flex max-w-[1440px] items-center justify-between px-6 py-4 md:px-10 lg:px-14">
 
           <div>
 

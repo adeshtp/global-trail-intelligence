@@ -1356,7 +1356,7 @@ function ExplorePageContent() {
           SEARCH
       ============================================================ */}
 
-      <section className="mx-auto max-w-[1440px] px-6 pt-7 md:px-10 lg:px-14">
+      <section className="mx-auto max-w-[1440px] px-6 pt-4 md:px-10 lg:px-14">
 
         <ExploreSearch
           initialQuery={

@@ -299,7 +299,7 @@ export default function TrailSidebar({
 
   return (
     <aside className="flex h-full min-h-0 flex-col bg-[#0b1724]">
-      <div className="shrink-0 border-b border-white/10 px-5 py-5">
+      <div className="shrink-0 border-b border-white/10 px-5 py-4">
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="text-[12px] font-medium uppercase tracking-[0.2em] text-white/60">
@@ -319,6 +319,14 @@ export default function TrailSidebar({
                 : `${trails.length} found`}
           </div>
         </div>
+      </div>
+
+      {controls}
+
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+        {/* The summary scrolls away with the list, so a short window keeps
+            the title and controls fixed and spends the rest on trails. */}
+        <div className="mb-4 border-b border-white/10 pb-4 [&>*:first-child]:mt-0">
 
         {counts ? (
           <>
@@ -328,41 +336,33 @@ export default function TrailSidebar({
               listing it as a third peer number made 47 look like it did not
               add up.
             */}
-            <div className="mt-3 grid grid-cols-2 gap-1.5">
+            <p className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-[13px] leading-5 text-white/70">
               {(
                 [
                   [
-                    "On the map",
+                    "on the map",
                     mappedCount,
                     "text-sky-200/90",
                     "Primary routes with identity and shape checked against OpenStreetMap",
                   ],
                   [
-                    "No shape yet",
+                    "no shape yet",
                     counts.unmapped,
-                    "text-white/70",
+                    "text-white/85",
                     "Real trails, but no trustworthy geometry found",
                   ],
                 ] as const
-              ).map(
-                ([label, value, tone, help]) => (
-                  <div
-                    key={label}
-                    className="rounded-lg border border-white/[0.07] bg-white/[0.02] px-2.5 py-2"
-                    title={help}
+              ).map(([label, value, tone, help]) => (
+                <span key={label} title={help}>
+                  <span
+                    className={`text-[15px] font-semibold ${tone}`}
                   >
-                    <p
-                      className={`text-[15px] font-semibold leading-none ${tone}`}
-                    >
-                      {value.toLocaleString()}
-                    </p>
-                    <p className="mt-1 text-[11px] leading-3 text-white/60">
-                      {label}
-                    </p>
-                  </div>
-                )
-              )}
-            </div>
+                    {value.toLocaleString()}
+                  </span>{" "}
+                  {label}
+                </span>
+              ))}
+            </p>
 
             {counts.weak_evidence > 0 ? (
               <p className="mt-2 text-[12px] leading-4 text-amber-200/80">
@@ -389,22 +389,14 @@ export default function TrailSidebar({
           </>
         ) : null}
 
-        <p className="mt-3 text-[13px] leading-5 text-white/60">
-          {counts
-            ? `${counts.relevance_accepted.toLocaleString()} relevant trail${
-                counts.relevance_accepted === 1 ? "" : "s"
-              } found in the searched area, of which ${mappedCount} ${
-                mappedCount === 1 ? "is" : "are"
-              } verified on the map and ${counts.unmapped} ${
-                counts.unmapped === 1 ? "is" : "are"
-              } still without verified shape yet.`
-            : "Available paths are ranked using the geographic and OpenStreetMap evidence returned for the searched area."}
-        </p>
-      </div>
+        {counts ? null : (
+          <p className="mt-3 text-[13px] leading-5 text-white/60">
+            Available paths are ranked using the geographic and OpenStreetMap
+            evidence returned for the searched area.
+          </p>
+        )}
+        </div>
 
-      {controls}
-
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
         {loading && (
           <div className="space-y-3">
             {Array.from({
@@ -671,10 +663,10 @@ export default function TrailSidebar({
               })}
             </div>
           }
-      </div>
 
-      <div className="shrink-0 border-t border-white/10 px-5 py-4">
-        <p className="text-[11px] leading-4 text-white/55">
+        {/* At the end of the list, not pinned under it: a pinned note would
+            take height from the trails on every screen. */}
+        <p className="mt-4 border-t border-white/10 pt-4 text-[11px] leading-4 text-white/55">
           Trail geometry and attributes come from
           OpenStreetMap. Display names may use the
           searched destination when an individual mapped

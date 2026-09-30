@@ -144,6 +144,20 @@ Outage measurements (hung and refused providers, real timeouts):
   body's `--background`/`--foreground`. Note the shadcn CLI resolved `cn` as an
   unrelated npm package; it was removed in favour of the standard
   `clsx` + `tailwind-merge` helper.
+- **Discovery panel fits the first screen** (requested after the sort/filter
+  work). The panel used a fixed 620px height and a 380px sidebar, and the
+  summary above the list left room for about one card. The panel is now sized
+  from the window (`useFitToViewport` in `DiscoveryPanel.tsx`: window height
+  minus everything above it, re-measured on resize and whenever the page above
+  changes height), with no fixed height; the sidebar width is
+  `clamp(22rem, 30vw, 32rem)`. To give the list the room: the two stat tiles
+  became one line and the paragraph that repeated them was dropped, the summary
+  and the OSM note now scroll with the list (only the title and the sort/filter
+  row stay pinned), and the header/search padding was tightened. Measured at
+  1280x720, 1440x900, 1600x791, 1920x1080 and 2560x1440: header, search and
+  panel always fit one screen with no page scroll; 1 card is fully visible at
+  the short sizes and up to 4 on a 1440p display (a card is about 200px tall,
+  so the next lever for short screens is a denser card).
 - **Two whole-branch code reviews** (backend and frontend). Backend findings, all
   fixed with tests in `test_review_findings.py`: half-read harvests were cached;
   the breaker admitted every caller as a probe after cooldown; an untestable

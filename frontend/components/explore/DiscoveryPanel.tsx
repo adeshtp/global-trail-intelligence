@@ -1,6 +1,6 @@
 "use client";
 
-import { type Dispatch, type SetStateAction } from "react";
+import { type Dispatch, type SetStateAction, useEffect, useRef } from "react";
 
 import type {
   Location,
@@ -13,6 +13,50 @@ import { DEFAULT_RESULT_VIEW, activeFilterCount, serverFiltered } from "@/app/ex
 import CesiumMap from "@/components/CesiumMap";
 import ResultControls from "@/components/explore/ResultControls";
 import TrailSidebar, { Trail } from "@/components/TrailSidebar";
+
+/*
+ * Sizes the panel to the space left on the first screen: the window height
+ * minus everything above it and the section's own bottom padding, so the header,
+ * search and panel fit one screen on any desktop display, with no fixed
+ * height. Measured again whenever the page above changes height (a search
+ * error, the section nav appearing) or the window is resized. Until it runs,
+ * and where it cannot, the CSS fallback in the class keeps a sensible height.
+ */
+function useFitToViewport<T extends HTMLElement>() {
+  const ref = useRef<T | null>(null);
+
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) {
+      return;
+    }
+
+    const fit = () => {
+      const rem = parseFloat(
+        getComputedStyle(document.documentElement).fontSize
+      );
+      const top = element.getBoundingClientRect().top + window.scrollY;
+      const available = window.innerHeight - top - rem * 1;
+      // Never smaller than a usable list; a very short window scrolls instead.
+      element.style.setProperty(
+        "--panel-height",
+        `${Math.max(available, rem * 26)}px`
+      );
+    };
+
+    fit();
+    const observer = new ResizeObserver(fit);
+    observer.observe(document.body);
+    window.addEventListener("resize", fit);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", fit);
+    };
+  }, []);
+
+  return ref;
+}
+
 
 type DiscoveryPanelProps = {
   coverage: TrailDiscoveryResponse["coverage"];
@@ -75,14 +119,19 @@ export default function DiscoveryPanel({
     ((viewMatch !== null && viewMatch.before > 0) ||
       (view.mappedOnly && (resultCounts?.relevance_accepted ?? 0) > 0));
 
+  const panelRef = useFitToViewport<HTMLDivElement>();
+
   return (
     <>
       <section
         id="trail-discovery"
-        className="mx-auto max-w-[1440px] scroll-mt-20 px-6 py-7 md:px-10 lg:px-14"
+        className="mx-auto max-w-[1440px] scroll-mt-20 px-6 py-4 md:px-10 lg:px-14"
       >
 
-        <div className="grid h-[620px] min-h-0 grid-cols-1 overflow-hidden rounded-[24px] border border-white/10 bg-[#0d1825] shadow-[0_25px_70px_rgba(0,0,0,0.22)] lg:grid-cols-[380px_minmax(0,1fr)]">
+        <div
+          ref={panelRef}
+          className="grid h-[var(--panel-height,40rem)] min-h-0 grid-cols-1 overflow-hidden rounded-[24px] border border-white/10 bg-[#0d1825] shadow-[0_25px_70px_rgba(0,0,0,0.22)] lg:grid-cols-[clamp(22rem,30vw,32rem)_minmax(0,1fr)]"
+        >
 
           <div className="min-h-0 overflow-hidden border-b border-white/10 lg:border-b-0 lg:border-r">
 
