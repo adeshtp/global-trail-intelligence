@@ -11,15 +11,17 @@ import time
 import unicodedata
 from collections import OrderedDict, defaultdict
 from dataclasses import asdict, dataclass, field
+from enum import Enum
 from functools import lru_cache
 from difflib import SequenceMatcher
-from typing import Any
+from typing import Annotated, Any, Literal, get_args
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from shapely.geometry import box, shape
 from unidecode import unidecode
 
 from app.core.config import settings
+from app.ml.feature_contract import GRADE_INDEX, GRADES
 from app.services.postpass import (
     PostpassRelation,
     PostpassWay,
@@ -3031,6 +3033,148 @@ def _candidate_sort_key(item: dict[str, Any]) -> tuple[Any, ...]:
     )
 
 
+# ------------------------------------------------------------
+# Sorting and filtering the ranked list
+# ------------------------------------------------------------
+
+class SortOrder(str, Enum):
+    relevance = "relevance"
+    nearest = "nearest"
+    longest = "longest"
+    shortest = "shortest"
+    easiest = "easiest"
+
+
+# The recorded OSM grades a filter may name: the same list the difficulty model
+# is trained on. The interface groups them into Easy / Moderate / Hard / Very
+# Hard, so the backend keeps one vocabulary and never a second grouping.
+GradeName = Literal[
+    "strolling",
+    "hiking",
+    "mountain_hiking",
+    "demanding_mountain_hiking",
+    "alpine_hiking",
+    "demanding_alpine_hiking",
+    "difficult_alpine_hiking",
+]
+GRADE_NAMES: tuple[str, ...] = get_args(GradeName)
+assert set(GRADE_NAMES) == set(GRADES), "GradeName drifted from the contract"
+
+
+@dataclass(frozen=True)
+class ResultView:
+    """How the caller wants the ranked list ordered and narrowed."""
+
+    sort: SortOrder = SortOrder.relevance
+    grades: frozenset[str] = frozenset()
+    min_length_km: float | None = None
+    max_length_km: float | None = None
+
+    @property
+    def filtered(self) -> bool:
+        return bool(
+            self.grades
+            or self.min_length_km is not None
+            or self.max_length_km is not None
+        )
+
+
+def _grade_rank(item: dict[str, Any]) -> int | None:
+    """
+    The hardest recorded grade on a trail, as an index into ``GRADES``.
+
+    A trail made of several ways can carry several grades; the hardest is the
+    one a hiker has to be ready for. None when nothing is recorded.
+    """
+    values = item.get("source_difficulty_values") or [
+        item.get("source_difficulty")
+    ]
+    ranks = [
+        GRADE_INDEX[str(value).strip().casefold()]
+        for value in values
+        if value and str(value).strip().casefold() in GRADE_INDEX
+    ]
+    return max(ranks) if ranks else None
+
+
+def _length_of(item: dict[str, Any]) -> float | None:
+    try:
+        return float(item["length_km"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _matches_view(item: dict[str, Any], view: ResultView) -> bool:
+    if view.grades:
+        rank = _grade_rank(item)
+        if rank is None or GRADES[rank] not in view.grades:
+            return False
+    length = _length_of(item)
+    if view.min_length_km is not None and (
+        length is None or length < view.min_length_km
+    ):
+        return False
+    if view.max_length_km is not None and (
+        length is None or length > view.max_length_km
+    ):
+        return False
+    return True
+
+
+def _view_key(item: dict[str, Any], sort: SortOrder) -> tuple[Any, ...]:
+    """Sort key for an explicit order; ties fall back to the default ranking,
+    so the order is total and every page continues the same sequence."""
+    length = _length_of(item)
+    if sort is SortOrder.nearest:
+        try:
+            primary: tuple[Any, ...] = (
+                float(item["distance_from_search_km"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            primary = (1e9,)
+    elif sort is SortOrder.longest:
+        primary = (length is None, -(length or 0.0))
+    elif sort is SortOrder.shortest:
+        primary = (length is None, length or 0.0)
+    else:  # easiest
+        rank = _grade_rank(item)
+        primary = (rank is None, rank or 0)
+    return (*primary, *_candidate_sort_key(item))
+
+
+def _apply_view(
+    mapped: list[dict[str, Any]],
+    unmapped: list[dict[str, Any]],
+    view: ResultView,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """
+    Narrow and order the whole ranked set, before it is cut into pages.
+
+    Trails with no verified shape have no measured length or grade, so a
+    filter on either hides them rather than pretending they match.
+    """
+    if view.filtered:
+        mapped = [item for item in mapped if _matches_view(item, view)]
+        unmapped = []
+    if view.sort is not SortOrder.relevance:
+        mapped = sorted(mapped, key=lambda item: _view_key(item, view.sort))
+    return mapped, unmapped
+
+
+def _view_summary(
+    view: ResultView, *, matched: int, before: int
+) -> dict[str, Any]:
+    return {
+        "sort": view.sort.value,
+        "grades": sorted(view.grades, key=GRADE_INDEX.__getitem__),
+        "min_length_km": view.min_length_km,
+        "max_length_km": view.max_length_km,
+        "filtered": view.filtered,
+        "matched": matched,
+        "before_filters": before,
+    }
+
+
 def _looks_like_exact_trail_query(place: str) -> bool:
     """
     True when the query names a route rather than a place.
@@ -3525,6 +3669,7 @@ async def _run_discovery(
     place_kind: str = "area",
     page: int = 1,
     page_size: int = MAX_MAP_READY_RESULTS,
+    view: ResultView = ResultView(),
 ) -> dict[str, Any]:
     """
     Shared discovery implementation.
@@ -3578,6 +3723,7 @@ async def _run_discovery(
         place_kind=place_kind,
         page=page,
         page_size=page_size,
+        view=view,
     )
 
 
@@ -3598,6 +3744,7 @@ async def _assemble_discovery_result(
     place_kind: str = "area",
     page: int = 1,
     page_size: int = MAX_MAP_READY_RESULTS,
+    view: ResultView = ResultView(),
 ) -> dict[str, Any]:
     """
     Turn raw Postpass rows plus the optional semantic layer into the response.
@@ -3845,6 +3992,11 @@ async def _assemble_discovery_result(
         key=_candidate_sort_key,
     )
     unmapped = [item for item in discovered if not item.get("map_ready")]
+    trails_before_view = len(mapped) + len(unmapped)
+    # An explicit sort or filter applies to the whole ranked set, before it is
+    # cut into pages, so page 2 continues the order and every count below
+    # follows the filter.
+    mapped, unmapped = _apply_view(mapped, unmapped, view)
     returned_mapped = mapped[
         (page - 1) * page_size : page * page_size
     ]
@@ -3908,7 +4060,8 @@ async def _assemble_discovery_result(
         status = "unavailable"
     elif no_provider_data:
         status = "no_provider_data"
-    elif ordered:
+    elif ordered or (view.filtered and trails_before_view):
+        # A filter that matches nothing is not an empty area.
         status = "success"
     else:
         status = "empty"
@@ -4133,6 +4286,11 @@ async def _assemble_discovery_result(
             "unmapped": len(unmapped),
             "provider_returned_no_rows": no_provider_data,
         },
+        "view": _view_summary(
+            view,
+            matched=len(mapped) + len(unmapped),
+            before=trails_before_view,
+        ),
         "enrichment_pending": not include_semantic,
     }
 
@@ -4150,6 +4308,10 @@ async def discover_trails(
     page_size: int = Query(
         MAX_MAP_READY_RESULTS, ge=1, le=MAX_MAP_READY_RESULTS
     ),
+    sort: Annotated[SortOrder, Query()] = SortOrder.relevance,
+    grade: Annotated[list[GradeName] | None, Query()] = None,
+    min_length_km: Annotated[float | None, Query(ge=0)] = None,
+    max_length_km: Annotated[float | None, Query(ge=0)] = None,
     request: Request = None,
 ):
     """
@@ -4186,6 +4348,12 @@ async def discover_trails(
         place_kind=place_kind,
         page=page,
         page_size=page_size,
+        view=ResultView(
+            sort=sort,
+            grades=frozenset(grade or ()),
+            min_length_km=min_length_km,
+            max_length_km=max_length_km,
+        ),
     )
 
 
@@ -4202,6 +4370,10 @@ async def enrich_trails(
     page_size: int = Query(
         MAX_MAP_READY_RESULTS, ge=1, le=MAX_MAP_READY_RESULTS
     ),
+    sort: Annotated[SortOrder, Query()] = SortOrder.relevance,
+    grade: Annotated[list[GradeName] | None, Query()] = None,
+    min_length_km: Annotated[float | None, Query(ge=0)] = None,
+    max_length_km: Annotated[float | None, Query(ge=0)] = None,
     request: Request = None,
 ):
     """
@@ -4238,5 +4410,11 @@ async def enrich_trails(
         place_kind=place_kind,
         page=page,
         page_size=page_size,
+        view=ResultView(
+            sort=sort,
+            grades=frozenset(grade or ()),
+            min_length_km=min_length_km,
+            max_length_km=max_length_km,
+        ),
     )
 
