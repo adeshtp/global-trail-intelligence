@@ -134,5 +134,8 @@ open_meteo_breaker = CircuitBreaker("open-meteo")
 
 discovery_limiter = FixedWindowRateLimiter()
 search_limiter = FixedWindowRateLimiter()
+# Type-ahead sends a request every pause in typing; it must never spend the
+# budget of the search the user actually submits.
+suggest_limiter = FixedWindowRateLimiter()
 intelligence_limiter = FixedWindowRateLimiter()
 enrichment_limiter = FixedWindowRateLimiter()
