@@ -297,6 +297,9 @@ def normalize_weather_response(
             "temperature": _number(current.get("temperature_2m")),
             "humidity": _number(current.get("relative_humidity_2m")),
             "precipitation": _number(current.get("precipitation")),
+            # Open-Meteo's current block is a 15-minute step (interval 900):
+            # the amount is what fell in that step, not an hourly rate.
+            "precipitation_interval_s": _number(current.get("interval")),
             "rain": _number(current.get("rain")),
             "showers": _number(current.get("showers")),
             "snowfall": _number(current.get("snowfall")),
@@ -669,6 +672,9 @@ def aggregate_route_weather(
             "temperature": current("temperature", min),
             "humidity": current("humidity", max),
             "precipitation": current("precipitation", max),
+            "precipitation_interval_s": first["current"].get(
+                "precipitation_interval_s"
+            ),
             "rain": current("rain", max),
             "showers": current("showers", max),
             "snowfall": current("snowfall", max),

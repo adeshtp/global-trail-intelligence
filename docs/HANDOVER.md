@@ -158,6 +158,28 @@ Outage measurements (hung and refused providers, real timeouts):
   panel always fit one screen with no page scroll; 1 card is fully visible at
   the short sizes and up to 4 on a 1440p display (a card is about 200px tall,
   so the next lever for short screens is a denser card).
+- **Light rain no longer makes a walk "not suitable"** (reported after the
+  fact; the thresholds predate this branch, they are the same on `main`).
+  Every rain reading used to add its own points (rain in the last 24 h, any
+  amount above 0.0 mm falling now, the weather code saying rain, any forecast
+  amount, any chance of 70%+, and a fixed +8 for every natural surface) against
+  an "adverse" cut-off of 55, so a 0.1 mm drizzle on a 25 C day scored 61.
+  Monsoon regions, where a 100% chance of rain is a normal day, showed it on
+  almost every trail. Now each fact is scored once, by how much there is:
+  raining now by intensity (the worse of the measured rate and the WMO code's
+  intensity; Open-Meteo's current block is a 15-minute step, so it is scaled to
+  mm/h, and the walk window's peak hourly rate is used when present), rain
+  expected by amount with the chance only adding to a real amount, a trace of
+  recent rain (<1 mm) barely counting, and the surface only when it is actually
+  wet. All the new cut-offs are named constants at the top of `intelligence.py`.
+  Because dry ground no longer adds +8, two real hazards that only reached
+  their verdict through that +8 were given their own weight: strong wind
+  (40+ km/h) is a caution on its own and a reported thunderstorm is adverse on
+  its own (`test_intelligence` guards both and is unchanged). Before/after on the
+  real scorer: the reported trail 61 adverse -> 20 favorable, drizzle 61 -> 11;
+  heavy rain, thunderstorm, snow, strong wind and the Kilimanjaro case keep
+  their verdicts. **The cut-offs for what counts as "unsuitable" are a product
+  judgement and are yours to tune.**
 - **Two whole-branch code reviews** (backend and frontend). Backend findings, all
   fixed with tests in `test_review_findings.py`: half-read harvests were cached;
   the breaker admitted every caller as a probe after cooldown; an untestable

@@ -46,6 +46,51 @@ WMO_STORM_CODES = {95, 96, 99}
 WMO_FOG_CODES = {45, 48}
 
 
+# How much a rain reading counts. Each fact is scored once, by how much there
+# is, so a drizzle is not an adverse walk. The cut-offs for "adverse" (55) and
+# "caution" (25) are below in condition_likelihood; these set how much each
+# kind of rain contributes.
+#
+# Rain rates follow the usual meteorological bands: light under 2.5 mm/h,
+# moderate to 7.6 mm/h, heavy above.
+RAIN_RATE_MODERATE_MM_H = 2.5
+RAIN_RATE_HEAVY_MM_H = 7.6
+RAIN_NOW_POINTS = {"light": 4, "moderate": 10, "heavy": 24}
+# What the WMO weather code says about intensity. Freezing rain and drizzle
+# (56, 57, 66, 67) make ground slippery whatever the amount.
+RAIN_CODE_INTENSITY = {
+    51: "light", 53: "light", 55: "light",
+    61: "light", 80: "light",
+    56: "moderate", 57: "moderate", 66: "moderate", 67: "moderate",
+    63: "moderate", 81: "moderate",
+    65: "heavy", 82: "heavy",
+}
+# Rain in the last 24 h: under 1 mm is a trace, not wet ground.
+RECENT_RAIN_TRACE_MM = 1.0
+# Rain expected in the next 24 h counts from 1 mm; a chance of rain only adds
+# to a real amount (a 100% chance of a trace is not a hazard).
+FORECAST_RAIN_MIN_MM = 1.0
+FORECAST_RAIN_HEAVY_MM = 5.0
+FORECAST_CHANCE_PERCENT = 70.0
+# A natural surface is penalised only when it is actually wet.
+SURFACE_WET_MM = 5.0
+
+
+def _rain_level(rate_mm_h: float | None) -> str | None:
+    if rate_mm_h is None or rate_mm_h <= 0.0:
+        return None
+    if rate_mm_h >= RAIN_RATE_HEAVY_MM_H:
+        return "heavy"
+    if rate_mm_h >= RAIN_RATE_MODERATE_MM_H:
+        return "moderate"
+    return "light"
+
+
+def _worse_level(first: str | None, second: str | None) -> str | None:
+    order = {None: 0, "light": 1, "moderate": 2, "heavy": 3}
+    return first if order[first] >= order[second] else second
+
+
 def condition_likelihood(
     trail: dict[str, Any],
     elevation: dict[str, Any] | None,
@@ -169,13 +214,21 @@ def condition_likelihood(
             22,
         )
         evidence.append(f"{recent_value:.1f} mm rain/precipitation in 24 h")
-    elif recent_value > 0.0:
+    elif recent_value >= RECENT_RAIN_TRACE_MM:
         score += 10
         add_factor(
             "wetness",
             "damp",
             f"{recent_value:.1f} mm of rain fell in the last 24 h",
             10,
+        )
+    elif recent_value > 0.0:
+        score += 3
+        add_factor(
+            "wetness",
+            "damp",
+            f"{recent_value:.1f} mm of rain fell in the last 24 h (a trace)",
+            3,
         )
     else:
         add_factor(
@@ -195,23 +248,43 @@ def condition_likelihood(
 
     if current_precip is None:
         missing.append("current_precipitation")
-    elif current_precip > 0.0:
-        score += 16
+
+    # Raining now is one fact, scored once by intensity: the worse of what is
+    # measured (the current 15-minute step read as a rate, and the heaviest
+    # hour of the walk) and what the weather code reports.
+    interval_s = _number(current.get("precipitation_interval_s")) or 3600.0
+    measured_rate = (
+        current_precip * 3600.0 / interval_s
+        if current_precip is not None
+        else None
+    )
+    window_peak = _number(window.get("max_precipitation_mm"))
+    if window_peak is not None and (
+        measured_rate is None or window_peak > measured_rate
+    ):
+        measured_rate = window_peak
+    rain_level = _worse_level(
+        _rain_level(measured_rate),
+        RAIN_CODE_INTENSITY.get(int(weather_code))
+        if weather_code is not None
+        else None,
+    )
+    if rain_level is not None:
+        points = RAIN_NOW_POINTS[rain_level]
+        score += points
+        rate_text = (
+            f" ({measured_rate:.1f} mm/h)"
+            if measured_rate is not None and measured_rate > 0.0
+            else ""
+        )
         add_factor(
             "precipitation",
             "active",
-            "Precipitation is falling at the weather point now",
-            16,
+            f"{rain_level.capitalize()} rain{rate_text} at the weather point"
+            + (" during the walk" if window_peak else " now"),
+            points,
         )
 
-    if weather_code is not None and weather_code in WMO_RAIN_CODES:
-        score += 6
-        add_factor(
-            "weather_code",
-            "rain",
-            f"Weather code {int(weather_code)} reports rain",
-            6,
-        )
     if weather_code is not None and weather_code in WMO_FOG_CODES:
         score += 6
         add_factor(
@@ -221,25 +294,26 @@ def condition_likelihood(
             6,
         )
 
+    # Rain expected is scored by amount. The chance of rain only adds to a
+    # real amount; a high chance of a trace is not a hazard.
     if forecast_rain is None:
         missing.append("forecast_rain")
-    elif forecast_rain >= 5.0:
-        score += 14
-        add_factor(
-            "forecast",
-            "rain",
-            f"{forecast_rain:.1f} mm of rain forecast in the next 24 h",
-            14,
+    elif forecast_rain >= FORECAST_RAIN_MIN_MM:
+        heavy = forecast_rain >= FORECAST_RAIN_HEAVY_MM
+        points = 14 if heavy else 6
+        likely = (
+            forecast_prob is not None
+            and forecast_prob >= FORECAST_CHANCE_PERCENT
         )
-    elif forecast_rain > 0.0:
-        score += 7
-    if forecast_prob is not None and forecast_prob >= 70.0:
-        score += 10
+        if likely:
+            points += 4 if heavy else 3
+        score += points
         add_factor(
             "forecast",
-            "likely_rain",
-            f"{forecast_prob:.0f}% chance of precipitation in the next 24 h",
-            10,
+            "likely_rain" if likely else "rain",
+            f"{forecast_rain:.1f} mm of rain forecast in the next 24 h"
+            + (f" ({forecast_prob:.0f}% chance)" if likely else ""),
+            points,
         )
 
     # ---------------- SNOW, STORM AND COLD ----------------
@@ -259,12 +333,14 @@ def condition_likelihood(
             30,
         )
     if weather_code is not None and weather_code in WMO_STORM_CODES:
-        score += 50
+        # A thunderstorm is adverse on its own (the adverse cut-off is 55). It
+        # used to get there only with the surface's fixed +8.
+        score += 55
         add_factor(
             "storm",
             "thunderstorm",
             f"Weather code {int(weather_code)} reports a thunderstorm",
-            50,
+            55,
         )
 
     if cold_temperature is None:
@@ -306,12 +382,15 @@ def condition_likelihood(
             28,
         )
     elif wind >= 40.0:
-        score += 18
+        # A strong wind is a caution on its own. It used to reach caution only
+        # because every natural surface carried a fixed +8; with that gone the
+        # wind has to carry the weight itself.
+        score += 25
         add_factor(
             "wind",
             "strong",
             f"{wind_label} is {wind:.1f} km/h",
-            18,
+            25,
         )
     elif wind >= 25.0:
         score += 9
@@ -326,13 +405,30 @@ def condition_likelihood(
     if not surface:
         missing.append("surface")
     elif surface in VULNERABLE_SURFACES:
-        score += 8
-        add_factor(
-            "surface",
-            "water_retaining",
-            f"Recorded trail surface is {surface}, which holds water",
-            8,
+        wet_surface = (
+            (recent_value is not None and recent_value >= SURFACE_WET_MM)
+            or (
+                forecast_rain is not None
+                and forecast_rain >= SURFACE_WET_MM
+            )
+            or rain_level in {"moderate", "heavy"}
         )
+        if wet_surface:
+            score += 8
+            add_factor(
+                "surface",
+                "water_retaining",
+                f"Recorded trail surface is {surface}, which holds water",
+                8,
+            )
+        else:
+            add_factor(
+                "surface",
+                "natural",
+                f"Recorded trail surface is {surface}; it holds water when "
+                f"wet, and it is not wet now",
+                0,
+            )
     elif surface in DRAINING_SURFACES:
         add_factor(
             "surface",
