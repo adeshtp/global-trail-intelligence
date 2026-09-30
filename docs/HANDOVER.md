@@ -6,6 +6,20 @@ branch (`sinan/bug-fixes-and-improvements`) and one PR (#4, targeting `main`).
 For the file map see `docs/TECH_STACK_AND_FILE_MAP.md`; this document only adds
 what changed and why.
 
+## Current state
+
+- **Branch / PR:** `sinan/bug-fixes-and-improvements`, PR #4, still a **draft**
+  (marking it ready, `gh pr ready 4`, is the owner's call). Everything is
+  committed and pushed; the last code commit before this note is `7138efc`.
+- **Backend:** 593 tests; 0 failures; the 7 baseline `test_difficulty` errors
+  (see below); the offline guard reports 0 outbound calls.
+- **Frontend:** `tsc`, `eslint`, `next build` and `check:bundle` are clean.
+  Browser flows (search, type-ahead, sort/filter, map expand/collapse, stale
+  load-more) were last run on a production build.
+- **Dependencies added on the frontend:** `radix-ui`, `class-variance-authority`,
+  `clsx`, `tailwind-merge`, `lucide-react`, `tw-animate-css` (shadcn/ui), so run
+  `npm ci` in `frontend/` after pulling.
+
 ## How to work in the repo
 
 | Task | Command |
@@ -15,6 +29,7 @@ what changed and why.
 | Live recall benchmark (needs the API running; never part of the suite) | `PYTHONPATH=backend backend/.venv/bin/python backend/tests/benchmark_recall.py [area ...]` |
 | Backend dev server (port 8001, no auto-reload, restart after edits) | `cd backend && .venv/bin/python run.py` |
 | Frontend checks | `cd frontend && npx tsc --noEmit && npm run lint && npm run build && npm run check:bundle` |
+| Run both locally | `cd backend && .venv/bin/python run.py` (8001), `cd frontend && npm run dev` (3000) |
 
 Things that cost time and are easy to trip over:
 
@@ -180,6 +195,12 @@ Outage measurements (hung and refused providers, real timeouts):
   heavy rain, thunderstorm, snow, strong wind and the Kilimanjaro case keep
   their verdicts. **The cut-offs for what counts as "unsuitable" are a product
   judgement and are yours to tune.**
+- **Hydration warning in dev.** A browser extension (SwiftRead) adds an
+  attribute to `<html>` before React hydrates, which raised a hydration error
+  overlay. `suppressHydrationWarning` on `<html>` in `app/layout.tsx` (the
+  documented fix; it only silences attribute mismatches on that element).
+  Reproduced by simulating the attribute in headless Chrome, red before and
+  green after.
 - **Two whole-branch code reviews** (backend and frontend). Backend findings, all
   fixed with tests in `test_review_findings.py`: half-read harvests were cached;
   the breaker admitted every caller as a probe after cooldown; an untestable
@@ -229,7 +250,16 @@ Outage measurements (hung and refused providers, real timeouts):
   ground truth, and say nothing about precision.
 - **The item-15 before/after browser comparison ran on builds with a blank map**
   (the minifier bug). The full flow was re-run afterwards with the map present.
-  `next dev` was not verified.
+  `next dev` is what the owner has been running day to day and works.
+- **Rain cut-offs are a judgement call.** Moderate rain on a natural trail still
+  scores adverse (62); light rain no longer does. Tune the named constants at the
+  top of `services/intelligence.py` if that is too strict or too lax.
+- **Assistant refusals are a dead end.** When a question is not answerable from
+  the trail data ("are there flowers now?") it says so, which is correct, but it
+  does not suggest what can be asked, and the "Ask about the trail" section lacks
+  the suggested-question chips the floating dock has. Offered, not done.
+- **Trail cards are about 200px tall**, so short screens show about one card;
+  a denser card is the next lever.
 - **Housekeeping:** two stale remote branches (`fix/01-recall-truncation`,
   `fix/08-shop-links`) and a few local `fix/*` / `diag/*` branches remain. Their
   commits are already in this branch. They are not deleted.
