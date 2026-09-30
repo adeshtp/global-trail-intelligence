@@ -96,6 +96,20 @@ Outage measurements (hung and refused providers, real timeouts):
 - **Regressions I introduced and caught by measuring outages:** serial
   Open-Meteo calls (50 s) and a Nominatim retry that doubled its timeout (21 s).
   Both fixed.
+- **Location type-ahead** (requested after the fixes, not one of the 15). The
+  Explore search box now suggests places as you type. Suggestions come from
+  **Photon** (`/api/search/suggest`), because the public Nominatim usage policy
+  forbids autocomplete. Picking one calls `/api/search/lookup`, which asks
+  Nominatim for that exact OSM id and returns the same shape a typed search
+  does, so peak/broad-area detection is unchanged and the place searched is the
+  place clicked (no re-ranking). Photon has its own breaker, cache, in-flight
+  sharing and rate limiter (`suggest_limiter`, so typing never spends the
+  submitted search's budget); it is never retried. The UI is a debounced
+  (250 ms, 3+ characters) ARIA combobox with arrow keys, Escape and mouse-down
+  selection, and stale responses are aborted. Plain Enter behaves exactly as
+  before. It is driven from `onChange` only, so `/explore?query=X` does not open
+  the list. Checked in a browser on a production build (stale-response hold,
+  keyboard, click picks the clicked place, auto-search leaves the list closed).
 - **Two whole-branch code reviews** (backend and frontend). Backend findings, all
   fixed with tests in `test_review_findings.py`: half-read harvests were cached;
   the breaker admitted every caller as a probe after cooldown; an untestable
@@ -119,6 +133,8 @@ Outage measurements (hung and refused providers, real timeouts):
 | No shared `httpx` client | Measured (about 0.34 s per Postpass call) but clients are bound to an event loop and tests use `asyncio.run`. |
 | No Gemini circuit breaker | Its timeout is already bounded and tested, and an outage falls back to deterministic extraction. |
 | No provider status in `/health` | Optional and the first thing to cut. |
+| Photon for suggestions, Nominatim for the search | Nominatim's policy forbids autocomplete; Photon is OSM-based and built for it, so suggestions match our data. The public Photon instance has a fair-use limit: watch it, and self-host or switch provider if usage grows. |
+| Suggestion pick uses a lookup by OSM id, not a text search | Photon's fields differ from Nominatim's (`osm_key`/`osm_value`, no `addresstype`, different extent order), and re-searching the label could rank a different place than the one clicked. |
 | Turn minification off, not work around it | Smallest change that restores the map; guarded by `check:bundle`. |
 | Commit format `<type>(api): 4-8 word message`, tests first, dataclasses/pydantic for new structures | The user's standing rules. |
 
@@ -133,6 +149,9 @@ Outage measurements (hung and refused providers, real timeouts):
 - **`ERR_BLOCKED_BY_RESPONSE.NotSameOrigin` console line.** Seen in earlier
   full-flow runs, not reproduced in a targeted one. Cause unverified (guess: a
   retailer image CDN blocking hotlinks). Unrelated to the map.
+- **Type-ahead depends on the public Photon instance** (fair use, no SLA).
+  When it is down the box simply shows no suggestions and typed search still
+  works.
 - **`get_way` requires a `name` tag**, so unnamed member ways are not scored in
   route difficulty (TMB scored 25 of 261 named members). Pre-existing.
 - **Recall figures are against the Postpass mirror in five areas**, not human
