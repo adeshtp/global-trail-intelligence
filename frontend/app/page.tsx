@@ -92,7 +92,7 @@ export default function Home() {
                     GoBeyond
                   </p>
 
-                  <p className="mt-0.5 text-[10px] uppercase tracking-[0.18em] text-white/40">
+                  <p className="mt-0.5 text-[12px] uppercase tracking-[0.18em] text-white/60">
                     Trail Intelligence
                   </p>
 
@@ -101,7 +101,7 @@ export default function Home() {
               </Link>
 
 
-              <nav className="flex items-center gap-7 text-sm text-white/60">
+              <nav className="flex items-center gap-7 text-sm text-white/75">
 
                 <Link
                   href="/explore"
@@ -136,7 +136,7 @@ export default function Home() {
 
           <section className="flex flex-1 flex-col items-center justify-center pb-20 pt-16 text-center">
 
-            <p className="mb-6 text-xs font-medium uppercase tracking-[0.28em] text-[#c8a66a] md:text-sm">
+            <p className="mb-6 text-[13px] font-medium uppercase tracking-[0.28em] text-[#c8a66a] md:text-sm">
               Verified OpenStreetMap routes
             </p>
 
@@ -150,7 +150,7 @@ export default function Home() {
           </h1>
 
 
-            <p className="mt-7 max-w-xl text-base leading-7 text-white/65 md:text-[17px]">
+            <p className="mt-7 max-w-xl text-base leading-7 text-white/80 md:text-[17px]">
               Search a mountain, a trail or a whole region. Every route we
               draw is checked against OpenStreetMap first, so the shape on
               the map is the shape that is actually recorded.
@@ -189,7 +189,7 @@ export default function Home() {
                   }
                   placeholder="Search a mountain, trail or location..."
                   autoComplete="off"
-                  className="h-14 min-w-0 flex-1 bg-transparent px-2 text-base text-white outline-none placeholder:text-white/35"
+                  className="h-14 min-w-0 flex-1 bg-transparent px-2 text-base text-white outline-none placeholder:text-white/60"
                 />
 
 
@@ -209,7 +209,7 @@ export default function Home() {
                 FEATURE PILLS
             ========================================================== */}
 
-            <div className="mt-9 flex flex-wrap justify-center gap-3 text-xs text-white/60 md:text-sm">
+            <div className="mt-9 flex flex-wrap justify-center gap-3 text-[13px] text-white/75 md:text-sm">
 
               <span className="rounded-full border border-white/10 bg-black/20 px-5 py-2.5 backdrop-blur-md">
                 ⛰ Trails
@@ -239,7 +239,7 @@ export default function Home() {
 
               <div className="rounded-2xl border border-white/10 bg-black/20 p-6 text-left backdrop-blur-xl">
 
-                <p className="text-xs uppercase tracking-[0.18em] text-[#c8a66a]">
+                <p className="text-[13px] uppercase tracking-[0.18em] text-[#c8a66a]">
                   Trails
                 </p>
 
@@ -249,7 +249,7 @@ export default function Home() {
                 </h2>
 
 
-                <p className="mt-2 text-sm leading-6 text-white/45">
+                <p className="mt-2 text-sm leading-6 text-white/70">
                   Find relevant mapped trails around the
                   places you want to explore.
                 </p>
@@ -259,7 +259,7 @@ export default function Home() {
 
               <div className="rounded-2xl border border-white/10 bg-black/20 p-6 text-left backdrop-blur-xl">
 
-                <p className="text-xs uppercase tracking-[0.18em] text-[#c8a66a]">
+                <p className="text-[13px] uppercase tracking-[0.18em] text-[#c8a66a]">
                   Conditions
                 </p>
 
@@ -269,7 +269,7 @@ export default function Home() {
                 </h2>
 
 
-                <p className="mt-2 text-sm leading-6 text-white/45">
+                <p className="mt-2 text-sm leading-6 text-white/70">
                   Combine terrain, elevation and weather
                   information around the selected route.
                 </p>
@@ -279,7 +279,7 @@ export default function Home() {
 
               <div className="rounded-2xl border border-white/10 bg-black/20 p-6 text-left backdrop-blur-xl">
 
-                <p className="text-xs uppercase tracking-[0.18em] text-[#c8a66a]">
+                <p className="text-[13px] uppercase tracking-[0.18em] text-[#c8a66a]">
                   Preparation
                 </p>
 
@@ -289,7 +289,7 @@ export default function Home() {
                 </h2>
 
 
-                <p className="mt-2 text-sm leading-6 text-white/45">
+                <p className="mt-2 text-sm leading-6 text-white/70">
                   Turn trail and condition information into
                   practical preparation guidance.
                 </p>
@@ -312,12 +312,12 @@ export default function Home() {
             sources actually used, and no ownership is claimed over any of
             them.
           */}
-          <footer className="pb-7 text-center text-xs text-white/30">
+          <footer className="pb-7 text-center text-[13px] text-white/55">
             <a
               href="https://www.openstreetmap.org/copyright"
               target="_blank"
               rel="noreferrer"
-              className="underline decoration-white/20 underline-offset-2 hover:text-white/50"
+              className="underline decoration-white/20 underline-offset-2 hover:text-white/70"
             >
               Trail geometry and attributes &copy; OpenStreetMap
               contributors
@@ -327,7 +327,7 @@ export default function Home() {
               href="https://open-meteo.com/"
               target="_blank"
               rel="noreferrer"
-              className="underline decoration-white/20 underline-offset-2 hover:text-white/50"
+              className="underline decoration-white/20 underline-offset-2 hover:text-white/70"
             >
               Weather and elevation from Open-Meteo
             </a>

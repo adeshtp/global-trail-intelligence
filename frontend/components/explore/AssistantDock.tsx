@@ -39,10 +39,10 @@ export default function AssistantDock({
             <div className="pointer-events-auto max-h-[min(32rem,70vh)] w-full overflow-y-auto rounded-2xl border border-white/12 bg-[#0b1724]/97 p-4 shadow-[0_24px_60px_rgba(0,0,0,0.55)] backdrop-blur">
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <p className="text-[10px] uppercase tracking-[0.15em] text-white/35">
+                  <p className="text-[12px] uppercase tracking-[0.15em] text-white/60">
                     Trail assistant
                   </p>
-                  <p className="mt-0.5 text-[12px] font-semibold text-white/85">
+                  <p className="mt-0.5 text-[13px] font-semibold text-white/85">
                     {selectedIntelligence.trail.name ??
                       "Selected trail"}
                   </p>
@@ -51,13 +51,13 @@ export default function AssistantDock({
                   type="button"
                   aria-label="Close assistant"
                   onClick={() => setAssistantOpen(false)}
-                  className="shrink-0 rounded-lg px-2 py-1 text-[11px] text-white/40 transition hover:bg-white/[0.07] hover:text-white"
+                  className="shrink-0 rounded-lg px-2 py-1 text-[13px] text-white/60 transition hover:bg-white/[0.07] hover:text-white"
                 >
                   Close
                 </button>
               </div>
 
-              <p className="mt-2 text-[10px] leading-4 text-white/30">
+              <p className="mt-2 text-[12px] leading-4 text-white/55">
                 Answers come only from this trail&apos;s verified data.
               </p>
 
@@ -73,7 +73,7 @@ export default function AssistantDock({
                     }
                     placeholder="Ask about this trail…"
                     maxLength={600}
-                    className="min-w-0 flex-1 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-[13px] text-white outline-none placeholder:text-white/25 focus:border-sky-300/40"
+                    className="min-w-0 flex-1 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-[13px] text-white outline-none placeholder:text-white/55 focus:border-sky-300/40"
                   />
                   <button
                     type="submit"
@@ -81,7 +81,7 @@ export default function AssistantDock({
                       assistantLoading ||
                       !assistantQuestion.trim()
                     }
-                    className="shrink-0 rounded-xl border border-sky-300/20 bg-sky-300/[0.08] px-3 py-2 text-[11px] font-semibold text-sky-200 transition hover:bg-sky-300/[0.14] disabled:cursor-wait disabled:opacity-60"
+                    className="shrink-0 rounded-xl border border-sky-300/20 bg-sky-300/[0.08] px-3 py-2 text-[13px] font-semibold text-sky-200 transition hover:bg-sky-300/[0.14] disabled:cursor-wait disabled:opacity-60"
                   >
                     {assistantLoading ? "…" : "Ask"}
                   </button>
@@ -98,7 +98,7 @@ export default function AssistantDock({
                     onClick={() =>
                       setAssistantQuestion(prompt)
                     }
-                    className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 text-[10px] text-white/50 transition hover:border-sky-300/25 hover:text-white/80"
+                    className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 text-[12px] text-white/70 transition hover:border-sky-300/25 hover:text-white/80"
                   >
                     {prompt}
                   </button>
@@ -106,14 +106,14 @@ export default function AssistantDock({
               </div>
 
               {assistantError ? (
-                <p className="mt-3 text-[11px] text-amber-200/70">
+                <p className="mt-3 text-[13px] text-amber-200/85">
                   {assistantError}
                 </p>
               ) : null}
 
               {assistantAnswer ? (
                 <div className="mt-3 rounded-xl border border-white/[0.08] bg-white/[0.025] p-3">
-                  <p className="whitespace-pre-line text-[12px] leading-5 text-white/75">
+                  <p className="whitespace-pre-line text-[13px] leading-5 text-white/75">
                     {assistantAnswer.answer}
                   </p>
                 </div>
@@ -129,11 +129,11 @@ export default function AssistantDock({
                 : "Ask the trail assistant"
             }
             onClick={() => setAssistantOpen(!assistantOpen)}
-            className="pointer-events-auto flex items-center gap-2 rounded-full border border-sky-300/25 bg-[#0d1825]/95 px-4 py-3 text-[12px] font-semibold text-sky-100 shadow-[0_12px_32px_rgba(0,0,0,0.45)] backdrop-blur transition hover:border-sky-300/50"
+            className="pointer-events-auto flex items-center gap-2 rounded-full border border-sky-300/25 bg-[#0d1825]/95 px-4 py-3 text-[13px] font-semibold text-sky-100 shadow-[0_12px_32px_rgba(0,0,0,0.45)] backdrop-blur transition hover:border-sky-300/50"
           >
             <span
               aria-hidden="true"
-              className="grid h-5 w-5 place-items-center rounded-full bg-sky-300/15 text-[11px]"
+              className="grid h-5 w-5 place-items-center rounded-full bg-sky-300/15 text-[13px]"
             >
               ?
             </span>

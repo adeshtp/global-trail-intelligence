@@ -70,29 +70,29 @@ export default function ProductCard({
       ) : (
         // Same box as the image case so cards with and without a photo keep
         // a consistent height in the grid row.
-        <div className="flex aspect-[4/3] w-full items-center justify-center bg-white/[0.03] p-3 text-[10px] text-white/25">
+        <div className="flex aspect-[4/3] w-full items-center justify-center bg-white/[0.03] p-3 text-[12px] text-white/55">
           {card.gear_item}
         </div>
       )}
 
       <div className="flex flex-1 flex-col p-3">
-        <p className="line-clamp-2 text-[12px] font-semibold leading-4 text-white/85">
+        <p className="line-clamp-2 text-[13px] font-semibold leading-4 text-white/85">
           {card.name}
         </p>
 
         {card.retailer ? (
-          <p className="mt-1 text-[10px] text-white/35">
+          <p className="mt-1 text-[12px] text-white/60">
             {card.retailer}
           </p>
         ) : null}
 
         {card.description ? (
-          <p className="mt-1.5 line-clamp-2 text-[10px] leading-4 text-white/30">
+          <p className="mt-1.5 line-clamp-2 text-[12px] leading-4 text-white/55">
             {card.description}
           </p>
         ) : null}
 
-        <p className="mt-auto pt-2 text-[10px] font-medium text-emerald-200/70 group-hover:text-emerald-200">
+        <p className="mt-auto pt-2 text-[12px] font-medium text-emerald-200/85 group-hover:text-emerald-200">
           {card.cta} ↗
         </p>
       </div>

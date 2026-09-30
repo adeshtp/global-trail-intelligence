@@ -84,7 +84,7 @@ export default function DiscoveryPanel({
             {trailError && (
               <div className="border-t border-white/10 bg-[#0b1724] px-5 py-3">
 
-                <p className="text-[11px] leading-5 text-white/45">
+                <p className="text-[13px] leading-5 text-white/70">
                   {
                     trailError
                   }
@@ -99,11 +99,11 @@ export default function DiscoveryPanel({
               coverage && (
                 <div className="border-t border-white/10 bg-[#0b1724] px-5 py-3">
 
-                  <p className="text-[10px] uppercase tracking-[0.15em] text-white/30">
+                  <p className="text-[12px] uppercase tracking-[0.15em] text-white/55">
                     Searched coverage
                   </p>
 
-                  <p className="mt-1.5 text-[11px] leading-5 text-white/45">
+                  <p className="mt-1.5 text-[13px] leading-5 text-white/70">
                     {
                       coverage.provider_returned_no_rows
                         ? "The map data source was searched and returned no rows at all for this area, so nothing can be concluded here about what is mapped."
@@ -138,10 +138,10 @@ export default function DiscoveryPanel({
                   </p>
                   {peakSearch?.is_peak_search ? (
                     <div className="mt-2.5 rounded-xl border border-sky-300/15 bg-sky-300/[0.04] p-3">
-                      <p className="text-[10px] uppercase tracking-[0.15em] text-sky-200/60">
+                      <p className="text-[12px] uppercase tracking-[0.15em] text-sky-200/80">
                         Summit
                       </p>
-                      <p className="mt-1 text-[11px] leading-5 text-white/60">
+                      <p className="mt-1 text-[13px] leading-5 text-white/75">
                         {peakSearch.summit_note}
                       </p>
                     </div>
@@ -152,7 +152,7 @@ export default function DiscoveryPanel({
                       type="button"
                       onClick={loadMoreTrails}
                       disabled={loadingMore}
-                      className="mt-2.5 w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-[11px] font-semibold text-white/70 transition hover:border-sky-300/30 hover:text-white disabled:opacity-50"
+                      className="mt-2.5 w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-[13px] font-semibold text-white/80 transition hover:border-sky-300/30 hover:text-white disabled:opacity-50"
                     >
                       {loadingMore
                         ? "Loading more…"
@@ -162,13 +162,13 @@ export default function DiscoveryPanel({
                           ).toLocaleString()} more ranked)`}
                     </button>
                   ) : pagination && pagination.total_ranked > 0 ? (
-                    <p className="mt-2 text-[10px] text-white/25">
+                    <p className="mt-2 text-[12px] text-white/55">
                       End of the ranked results for this search.
                     </p>
                   ) : null}
 
                   {loadMoreError ? (
-                    <p className="mt-2 text-[11px] leading-5 text-amber-200/70">
+                    <p className="mt-2 text-[13px] leading-5 text-amber-200/85">
                       {loadMoreError}
                     </p>
                   ) : null}

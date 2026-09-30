@@ -14,7 +14,7 @@ export default function GearSection({
     <>
       <section id="gear" className="mt-5 scroll-mt-20 rounded-[24px] border border-white/10 bg-[#0d1825] p-7">
 
-        <p className="text-[11px] uppercase tracking-[0.2em] text-white/35">
+        <p className="text-[13px] uppercase tracking-[0.2em] text-white/60">
           Preparation
         </p>
 
@@ -25,7 +25,7 @@ export default function GearSection({
 
         {selectedIntelligence ? (
           <>
-            <p className="mt-2 max-w-[70ch] text-[12px] leading-6 text-white/40">
+            <p className="mt-2 max-w-[70ch] text-[13px] leading-6 text-white/60">
               Built from this route&apos;s measured length, ascent,
               steepest section and recorded surface, plus the weather
               observed on it right now. Each item appears because
@@ -33,7 +33,7 @@ export default function GearSection({
             </p>
 
             {selectedIntelligence.gear.activity ? (
-              <p className="mt-3 max-w-[70ch] rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-[12px] leading-5 text-white/60">
+              <p className="mt-3 max-w-[70ch] rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-[13px] leading-5 text-white/75">
                 <span className="font-semibold text-white/85">
                   {selectedIntelligence.gear.activity.label}.
                 </span>{" "}
@@ -57,7 +57,7 @@ export default function GearSection({
               }
               return (
                 <div key={tier} className="mt-5">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-white/40">
+                  <p className="text-[13px] font-semibold uppercase tracking-[0.16em] text-white/60">
                     {label}
                   </p>
                   <ul className="mt-2 space-y-1.5">
@@ -69,7 +69,7 @@ export default function GearSection({
                         <p className="text-[13px] font-semibold text-white/90">
                           {item.item}
                         </p>
-                        <p className="mt-1 text-[12px] leading-5 text-white/45">
+                        <p className="mt-1 text-[13px] leading-5 text-white/70">
                           {item.reason}
                         </p>
                       </li>
@@ -80,7 +80,7 @@ export default function GearSection({
             })}
 
             {selectedIntelligence.gear.missing_evidence.length > 0 ? (
-              <p className="mt-4 text-[11px] leading-5 text-amber-200/60">
+              <p className="mt-4 text-[13px] leading-5 text-amber-200/80">
                 Not available for this route:{" "}
                 {missingEvidenceText(
                   selectedIntelligence.gear.missing_evidence
@@ -91,7 +91,7 @@ export default function GearSection({
             ) : null}
           </>
         ) : (
-          <p className="mt-5 text-sm leading-7 text-white/45">
+          <p className="mt-5 text-sm leading-7 text-white/70">
             Select a verified trail to see the preparation its measured
             route and current conditions actually justify.
           </p>

@@ -16,7 +16,7 @@ export default function ExploreHeader({
 
           <div>
 
-            <p className="text-[10px] uppercase tracking-[0.22em] text-white/40">
+            <p className="text-[12px] uppercase tracking-[0.22em] text-white/60">
               Explore
             </p>
 
@@ -28,7 +28,7 @@ export default function ExploreHeader({
 
 
           {locationName && (
-            <div className="hidden max-w-[500px] truncate rounded-full border border-white/10 bg-white/[0.04] px-4 py-2 text-xs text-white/55 md:block">
+            <div className="hidden max-w-[500px] truncate rounded-full border border-white/10 bg-white/[0.04] px-4 py-2 text-[13px] text-white/75 md:block">
               {
                 locationName
               }

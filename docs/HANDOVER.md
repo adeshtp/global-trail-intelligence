@@ -110,6 +110,15 @@ Outage measurements (hung and refused providers, real timeouts):
   before. It is driven from `onChange` only, so `/explore?query=X` does not open
   the list. Checked in a browser on a production build (stale-response hold,
   keyboard, click picks the clicked place, auto-search leaves the list closed).
+- **Readability pass** (requested after the fixes). Secondary text was 25-40%
+  white on a near-black surface, which measures 2.2-3.8:1 (WCAG wants 4.5:1),
+  at 9-11px. The theme is unchanged; text opacities were remapped in one
+  monotone scale (25/30 -> 55, 35/40 -> 60, 45/50 -> 70, 55/60 -> 75, 65/70 ->
+  80; every step is now 6:1 or better) and the size scale moved up one step
+  (9->11, 10->12, 11/12/`text-xs`->13px; `text-sm` unchanged), across the
+  landing page, Explore, the sidebar, the map controls and every section.
+  Disabled states keep their reduced opacity on purpose. Checked in screenshots
+  before and after (weather, gear, discovery list); no overflow.
 - **Two whole-branch code reviews** (backend and frontend). Backend findings, all
   fixed with tests in `test_review_findings.py`: half-read harvests were cached;
   the breaker admitted every caller as a probe after cooldown; an untestable

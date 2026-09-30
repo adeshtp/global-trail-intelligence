@@ -1136,7 +1136,7 @@ export default function ExploreSearch({
 
         <div className="flex items-center rounded-2xl border border-white/10 bg-[#0d1825]/95 p-2 shadow-[0_18px_50px_rgba(0,0,0,0.20)] backdrop-blur-xl">
 
-          <span className="px-4 text-xl text-white/40">
+          <span className="px-4 text-xl text-white/60">
             ⌕
           </span>
 
@@ -1185,7 +1185,7 @@ export default function ExploreSearch({
             }
             placeholder="Search a mountain, trail or location..."
             autoComplete="off"
-            className="h-14 min-w-0 flex-1 bg-transparent px-2 text-sm text-white outline-none placeholder:text-white/30"
+            className="h-14 min-w-0 flex-1 bg-transparent px-2 text-sm text-white outline-none placeholder:text-white/55"
           />
 
 
@@ -1255,7 +1255,7 @@ export default function ExploreSearch({
                   </span>
 
                   {suggestion.detail && (
-                    <span className="truncate text-xs text-white/40">
+                    <span className="truncate text-[13px] text-white/60">
                       {
                         suggestion.detail
                       }
@@ -1271,7 +1271,7 @@ export default function ExploreSearch({
 
 
       {error && (
-        <p className="mt-3 px-2 text-xs text-red-300">
+        <p className="mt-3 px-2 text-[13px] text-red-300">
           {
             error
           }

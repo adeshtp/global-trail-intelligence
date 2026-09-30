@@ -24,7 +24,7 @@ export default function ConditionsSection({
 
           <div>
 
-            <p className="text-[11px] uppercase tracking-[0.2em] text-white/35">
+            <p className="text-[13px] uppercase tracking-[0.2em] text-white/60">
               Conditions
             </p>
 
@@ -37,7 +37,7 @@ export default function ConditionsSection({
 
 
           {weather && (
-            <p className="text-[11px] text-white/30">
+            <p className="text-[13px] text-white/55">
               {weather.aggregation === "worst_case"
                 ? "Live weather along the route"
                 : "Live weather at trail midpoint"}
@@ -56,7 +56,7 @@ export default function ConditionsSection({
 
               <div className="h-2 w-2 animate-pulse rounded-full bg-emerald-400/70" />
 
-              <p className="text-sm text-white/55">
+              <p className="text-sm text-white/75">
                 Loading current weather…
               </p>
 
@@ -73,7 +73,7 @@ export default function ConditionsSection({
 
             <div className="mt-6 rounded-2xl border border-amber-300/10 bg-amber-300/[0.03] px-5 py-5">
 
-              <p className="text-sm text-white/55">
+              <p className="text-sm text-white/75">
                 {
                   weatherError
                 }
@@ -99,7 +99,7 @@ export default function ConditionsSection({
 
                   <div>
 
-                    <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-white/30">
+                    <p className="text-[12px] font-medium uppercase tracking-[0.16em] text-white/55">
                       Current
                     </p>
 
@@ -120,14 +120,14 @@ export default function ConditionsSection({
                       </p>
 
 
-                      <span className="mb-1 text-lg text-white/35">
+                      <span className="mb-1 text-lg text-white/60">
                         °C
                       </span>
 
                     </div>
 
 
-                    <p className="mt-2 text-sm text-emerald-300/70">
+                    <p className="mt-2 text-sm text-emerald-300/85">
                       {
                         weather.current.weather_condition
                       }
@@ -140,7 +140,7 @@ export default function ConditionsSection({
 
                   <div className="rounded-2xl border border-white/[0.06] bg-white/[0.025] p-4">
 
-                    <p className="text-[10px] uppercase tracking-[0.16em] text-white/30">
+                    <p className="text-[12px] uppercase tracking-[0.16em] text-white/55">
                       Rain chance
                     </p>
 
@@ -158,7 +158,7 @@ export default function ConditionsSection({
                     </p>
 
 
-                    <p className="mt-1 text-[11px] text-white/30">
+                    <p className="mt-1 text-[13px] text-white/55">
                       Current hour
                     </p>
 
@@ -169,7 +169,7 @@ export default function ConditionsSection({
 
                   <div className="rounded-2xl border border-white/[0.06] bg-white/[0.025] p-4">
 
-                    <p className="text-[10px] uppercase tracking-[0.16em] text-white/30">
+                    <p className="text-[12px] uppercase tracking-[0.16em] text-white/55">
                       Precipitation
                     </p>
 
@@ -188,7 +188,7 @@ export default function ConditionsSection({
                     </p>
 
 
-                    <p className="mt-1 text-[11px] text-white/30">
+                    <p className="mt-1 text-[13px] text-white/55">
                       Current
                     </p>
 
@@ -205,7 +205,7 @@ export default function ConditionsSection({
 
                   <div className="rounded-2xl border border-white/[0.06] bg-white/[0.025] px-4 py-3">
 
-                    <p className="text-[10px] uppercase tracking-[0.14em] text-white/30">
+                    <p className="text-[12px] uppercase tracking-[0.14em] text-white/55">
                       Humidity
                     </p>
 
@@ -228,7 +228,7 @@ export default function ConditionsSection({
 
                   <div className="rounded-2xl border border-white/[0.06] bg-white/[0.025] px-4 py-3">
 
-                    <p className="text-[10px] uppercase tracking-[0.14em] text-white/30">
+                    <p className="text-[12px] uppercase tracking-[0.14em] text-white/55">
                       Wind
                     </p>
 
@@ -253,7 +253,7 @@ export default function ConditionsSection({
 
                   <div className="rounded-2xl border border-white/[0.06] bg-white/[0.025] px-4 py-3">
 
-                    <p className="text-[10px] uppercase tracking-[0.14em] text-white/30">
+                    <p className="text-[12px] uppercase tracking-[0.14em] text-white/55">
                       Rain
                     </p>
 
@@ -278,7 +278,7 @@ export default function ConditionsSection({
 
                   <div className="rounded-2xl border border-white/[0.06] bg-white/[0.025] px-4 py-3">
 
-                    <p className="text-[10px] uppercase tracking-[0.14em] text-white/30">
+                    <p className="text-[12px] uppercase tracking-[0.14em] text-white/55">
                       Updated
                     </p>
 
@@ -297,7 +297,7 @@ export default function ConditionsSection({
                     </p>
 
 
-                    <p className="text-[10px] text-white/25">
+                    <p className="text-[12px] text-white/55">
                       Local time
                     </p>
 
@@ -310,7 +310,7 @@ export default function ConditionsSection({
 
               {(weather.recent_rain || weather.recent_precipitation) && (
                 <div className="mt-4 rounded-2xl border border-white/[0.06] bg-white/[0.02] px-4 py-4">
-                  <p className="text-[10px] uppercase tracking-[0.14em] text-white/30">
+                  <p className="text-[12px] uppercase tracking-[0.14em] text-white/55">
                     Recent rainfall
                   </p>
                   <div className="mt-3 grid grid-cols-3 gap-3 text-center">
@@ -322,7 +322,7 @@ export default function ConditionsSection({
                             ? `${weather.recent_precipitation?.["24h_mm"]!.toFixed(1)} mm`
                             : "—"}
                       </p>
-                      <p className="mt-1 text-[10px] text-white/25">24h</p>
+                      <p className="mt-1 text-[12px] text-white/55">24h</p>
                     </div>
                     <div>
                       <p className="text-sm font-semibold text-white/80">
@@ -332,7 +332,7 @@ export default function ConditionsSection({
                             ? `${weather.recent_precipitation?.["48h_mm"]!.toFixed(1)} mm`
                             : "—"}
                       </p>
-                      <p className="mt-1 text-[10px] text-white/25">48h</p>
+                      <p className="mt-1 text-[12px] text-white/55">48h</p>
                     </div>
                     <div>
                       <p className="text-sm font-semibold text-white/80">
@@ -342,7 +342,7 @@ export default function ConditionsSection({
                             ? `${weather.recent_precipitation?.["72h_mm"]!.toFixed(1)} mm`
                             : "—"}
                       </p>
-                      <p className="mt-1 text-[10px] text-white/25">72h</p>
+                      <p className="mt-1 text-[12px] text-white/55">72h</p>
                     </div>
                   </div>
                 </div>
@@ -353,7 +353,7 @@ export default function ConditionsSection({
               weather.samples &&
               weather.samples.length > 1 ? (
                 <div className="mt-3 rounded-xl border border-white/[0.06] bg-white/[0.02] px-3 py-2.5">
-                  <p className="text-[10px] leading-5 text-white/40">
+                  <p className="text-[12px] leading-5 text-white/60">
                     The figures above are the harshest of{" "}
                     {weather.samples.length} points along the route, each
                     read at its own elevation.
@@ -362,9 +362,9 @@ export default function ConditionsSection({
                     {weather.samples.map((sample, index) => (
                       <li
                         key={`${sample.latitude}-${sample.longitude}-${sample.elevation_m}-${index}`}
-                        className="text-[11px] leading-5 text-white/50"
+                        className="text-[13px] leading-5 text-white/70"
                       >
-                        <span className="capitalize text-white/70">
+                        <span className="capitalize text-white/80">
                           {sample.labels.join(" / ")}
                         </span>
                         {`, ${Math.round(sample.elevation_m)} m: `}
@@ -385,10 +385,10 @@ export default function ConditionsSection({
 
               {weather.window && weather.inference ? (
                 <div className="mt-3 rounded-xl border border-sky-300/15 bg-sky-300/[0.04] px-3 py-2.5">
-                  <p className="text-[10px] uppercase tracking-[0.15em] text-sky-200/60">
+                  <p className="text-[12px] uppercase tracking-[0.15em] text-sky-200/80">
                     Over the walk · inferred from the forecast
                   </p>
-                  <p className="mt-1 text-[11px] leading-5 text-white/60">
+                  <p className="mt-1 text-[13px] leading-5 text-white/75">
                     Over about {Math.round(weather.window.hours)} h of walking
                     {weather.window.min_temperature !== null
                       ? `, the coldest expected temperature is ${weather.window.min_temperature.toFixed(1)} °C`
@@ -403,25 +403,25 @@ export default function ConditionsSection({
                   </p>
                   {weather.inference.freezing_level_m !== null &&
                   weather.inference.highest_point_m !== null ? (
-                    <p className="mt-1 text-[11px] leading-5 text-white/60">
+                    <p className="mt-1 text-[13px] leading-5 text-white/75">
                       {weather.inference.upper_route_above_freezing_level
                         ? `The freezing level (${Math.round(weather.inference.freezing_level_m)} m) is below the highest point of the route (${Math.round(weather.inference.highest_point_m)} m), so the upper part is likely to be at or below freezing.`
                         : `The freezing level (${Math.round(weather.inference.freezing_level_m)} m) is above the highest point of the route (${Math.round(weather.inference.highest_point_m)} m).`}
                     </p>
                   ) : null}
                   {weather.inference.snow_on_route_likely ? (
-                    <p className="mt-1 text-[11px] leading-5 text-amber-100/80">
+                    <p className="mt-1 text-[13px] leading-5 text-amber-100/80">
                       Snow is likely on the upper route:{" "}
                       {weather.inference.snow_reasons.join("; ")}.
                     </p>
                   ) : null}
-                  <p className="mt-1.5 text-[10px] leading-4 text-white/35">
+                  <p className="mt-1.5 text-[12px] leading-4 text-white/60">
                     {weather.inference.basis} {weather.inference.window_basis}.
                   </p>
                 </div>
               ) : null}
 
-              <p className="mt-3 text-[10px] leading-5 text-white/25">
+              <p className="mt-3 text-[12px] leading-5 text-white/55">
                 Weather source: {weather.source}
                 {weather.aggregation === "worst_case"
                   ? " · read along the selected route"

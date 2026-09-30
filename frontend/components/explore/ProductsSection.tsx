@@ -22,7 +22,7 @@ export default function ProductsSection({
     <>
       <section id="products" className="mt-5 scroll-mt-20 rounded-[24px] border border-white/10 bg-[#0d1825] p-7">
 
-        <p className="text-[11px] uppercase tracking-[0.2em] text-white/35">
+        <p className="text-[13px] uppercase tracking-[0.2em] text-white/60">
           Products
         </p>
 
@@ -34,7 +34,7 @@ export default function ProductsSection({
 
         {selectedIntelligence ? (
           <div className="mt-5">
-            <p className="max-w-[72ch] text-[12px] leading-6 text-white/40">
+            <p className="max-w-[72ch] text-[13px] leading-6 text-white/60">
               Every item your route asked for has a card here: a
               real product when the search found one, otherwise a
               shopping destination for that kind of gear. Prices,
@@ -46,7 +46,7 @@ export default function ProductsSection({
               type="button"
               onClick={() => void handleProductSearch()}
               disabled={productsLoading}
-              className="mt-4 rounded-xl border border-emerald-300/20 bg-emerald-300/[0.08] px-4 py-2 text-xs font-semibold text-emerald-200 transition hover:bg-emerald-300/[0.14] disabled:cursor-wait disabled:opacity-60"
+              className="mt-4 rounded-xl border border-emerald-300/20 bg-emerald-300/[0.08] px-4 py-2 text-[13px] font-semibold text-emerald-200 transition hover:bg-emerald-300/[0.14] disabled:cursor-wait disabled:opacity-60"
             >
               {productsLoading
                 ? "Searching products…"
@@ -56,7 +56,7 @@ export default function ProductsSection({
             </button>
 
             {productsError ? (
-              <p className="mt-3 text-xs text-amber-200/70">
+              <p className="mt-3 text-[13px] text-amber-200/85">
                 {productsError}
               </p>
             ) : null}
@@ -82,7 +82,7 @@ export default function ProductsSection({
                     }
                     return (
                       <div key={tier}>
-                        <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-white/40">
+                        <p className="text-[13px] font-semibold uppercase tracking-[0.16em] text-white/60">
                           {label}
                         </p>
                         <div className="mt-2 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -100,21 +100,21 @@ export default function ProductsSection({
                   })}
                 </div>
               ) : (
-                <p className="mt-4 text-sm text-white/40">
+                <p className="mt-4 text-sm text-white/60">
                   None of the preparation items for this trail is a
                   product that can be bought, so no product search was
                   made.
                 </p>
               )
             ) : (
-              <p className="mt-4 text-sm text-white/40">
+              <p className="mt-4 text-sm text-white/60">
                 Search for real products matching the preparation
                 recommended for this trail.
               </p>
             )}
           </div>
         ) : (
-          <p className="mt-5 text-sm text-white/40">
+          <p className="mt-5 text-sm text-white/60">
             Select a verified trail to see products for the
             preparation it actually calls for.
           </p>

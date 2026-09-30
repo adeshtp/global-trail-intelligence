@@ -68,7 +68,7 @@ export default function ElevationProfile({
 
   if (points.length < 2 || components.length === 0) {
     return (
-      <p className="mt-5 text-[11px] text-white/30">
+      <p className="mt-5 text-[13px] text-white/55">
         Not enough elevation samples to draw a profile.
       </p>
     );
@@ -369,14 +369,14 @@ export default function ElevationProfile({
       </svg>
 
       {drawComponents.length > 1 ? (
-        <p className="mt-2 text-[10px] leading-4 text-white/30">
+        <p className="mt-2 text-[12px] leading-4 text-white/55">
           {drawComponents.length} disconnected pieces are drawn
           separately. The gaps between them are not distance, and
           no climb is counted across them.
         </p>
       ) : null}
 
-      <p className="mt-2 text-[10px] leading-4 text-white/30">
+      <p className="mt-2 text-[12px] leading-4 text-white/55">
         {oriented.directionNote}
       </p>
 
@@ -413,7 +413,7 @@ export default function ElevationProfile({
               key={label}
               className="rounded-xl border border-white/[0.07] bg-white/[0.02] px-3 py-2"
             >
-              <p className="text-[9px] uppercase tracking-[0.12em] text-white/35">
+              <p className="text-[11px] uppercase tracking-[0.12em] text-white/60">
                 {label}
               </p>
               <p className="mt-0.5 text-[13px] font-semibold text-white/80">

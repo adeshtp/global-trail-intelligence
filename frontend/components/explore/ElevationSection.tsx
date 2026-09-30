@@ -23,7 +23,7 @@ export default function ElevationSection({
     <>
       <section id="elevation" className="mt-5 scroll-mt-20 rounded-[24px] border border-white/10 bg-[#0d1825] p-7">
 
-        <p className="text-[11px] uppercase tracking-[0.2em] text-white/35">
+        <p className="text-[13px] uppercase tracking-[0.2em] text-white/60">
           Terrain
         </p>
 
@@ -37,7 +37,7 @@ export default function ElevationSection({
           baseline-aligned against the title and crowded the metrics
           directly beneath it.
         */}
-        <p className="mt-2.5 max-w-[74ch] text-[12px] leading-6 text-white/40">
+        <p className="mt-2.5 max-w-[74ch] text-[13px] leading-6 text-white/60">
           How high the route climbs and descends, sampled along the
           geometry drawn on the map
           {selectedAnalysis
@@ -50,7 +50,7 @@ export default function ElevationSection({
         </p>
 
         {selectedAnalysis?.completeness?.note ? (
-          <p className="mt-2 max-w-[74ch] rounded-lg border border-amber-300/20 bg-amber-300/[0.05] px-2.5 py-1.5 text-[11px] leading-5 text-amber-100/80">
+          <p className="mt-2 max-w-[74ch] rounded-lg border border-amber-300/20 bg-amber-300/[0.05] px-2.5 py-1.5 text-[13px] leading-5 text-amber-100/80">
             {selectedAnalysis.completeness.note}
           </p>
         ) : null}
@@ -65,7 +65,7 @@ export default function ElevationSection({
 
               <div className="h-2 w-2 animate-pulse rounded-full bg-emerald-400/70" />
 
-              <p className="text-sm text-white/55">
+              <p className="text-sm text-white/75">
                 Analysing trail elevation…
               </p>
 
@@ -82,7 +82,7 @@ export default function ElevationSection({
 
             <div className="mt-6 rounded-2xl border border-amber-300/10 bg-amber-300/[0.03] px-5 py-5">
 
-              <p className="text-sm text-white/55">
+              <p className="text-sm text-white/75">
                 {
                   elevationError
                 }
@@ -110,7 +110,7 @@ export default function ElevationSection({
 
                   <div className="flex items-center justify-between">
 
-                    <p className="text-[10px] font-medium uppercase tracking-[0.15em] text-white/30">
+                    <p className="text-[12px] font-medium uppercase tracking-[0.15em] text-white/55">
                       Minimum
                     </p>
 
@@ -133,7 +133,7 @@ export default function ElevationSection({
                   </p>
 
 
-                  <p className="mt-1 text-[11px] text-white/25">
+                  <p className="mt-1 text-[13px] text-white/55">
                     Lowest sampled point
                   </p>
 
@@ -146,7 +146,7 @@ export default function ElevationSection({
 
                   <div className="flex items-center justify-between">
 
-                    <p className="text-[10px] font-medium uppercase tracking-[0.15em] text-white/30">
+                    <p className="text-[12px] font-medium uppercase tracking-[0.15em] text-white/55">
                       Maximum
                     </p>
 
@@ -169,7 +169,7 @@ export default function ElevationSection({
                   </p>
 
 
-                  <p className="mt-1 text-[11px] text-white/25">
+                  <p className="mt-1 text-[13px] text-white/55">
                     Highest sampled point
                   </p>
 
@@ -182,7 +182,7 @@ export default function ElevationSection({
 
                   <div className="flex items-center justify-between">
 
-                    <p className="text-[10px] font-medium uppercase tracking-[0.15em] text-white/30">
+                    <p className="text-[12px] font-medium uppercase tracking-[0.15em] text-white/55">
                       Elevation gain
                     </p>
 
@@ -205,7 +205,7 @@ export default function ElevationSection({
                   </p>
 
 
-                  <p className="mt-1 text-[11px] text-white/25">
+                  <p className="mt-1 text-[13px] text-white/55">
                     Total uphill movement
                   </p>
 
@@ -218,7 +218,7 @@ export default function ElevationSection({
 
                   <div className="flex items-center justify-between">
 
-                    <p className="text-[10px] font-medium uppercase tracking-[0.15em] text-white/30">
+                    <p className="text-[12px] font-medium uppercase tracking-[0.15em] text-white/55">
                       Elevation loss
                     </p>
 
@@ -241,7 +241,7 @@ export default function ElevationSection({
                   </p>
 
 
-                  <p className="mt-1 text-[11px] text-white/25">
+                  <p className="mt-1 text-[13px] text-white/55">
                     Total downhill movement
                   </p>
 
@@ -254,7 +254,7 @@ export default function ElevationSection({
 
                   <div className="flex items-center justify-between">
 
-                    <p className="text-[10px] font-medium uppercase tracking-[0.15em] text-white/30">
+                    <p className="text-[12px] font-medium uppercase tracking-[0.15em] text-white/55">
                       Average slope
                     </p>
 
@@ -277,7 +277,7 @@ export default function ElevationSection({
                   </p>
 
 
-                  <p className="mt-1 text-[11px] text-white/25">
+                  <p className="mt-1 text-[13px] text-white/55">
                     Across sampled sections
                   </p>
 
@@ -290,7 +290,7 @@ export default function ElevationSection({
 
                   <div className="flex items-center justify-between">
 
-                    <p className="text-[10px] font-medium uppercase tracking-[0.15em] text-white/30">
+                    <p className="text-[12px] font-medium uppercase tracking-[0.15em] text-white/55">
                       Maximum slope
                     </p>
 
@@ -313,7 +313,7 @@ export default function ElevationSection({
                   </p>
 
 
-                  <p className="mt-1 text-[11px] text-white/25">
+                  <p className="mt-1 text-[13px] text-white/55">
                     Steepest sampled section
                   </p>
 
@@ -356,13 +356,13 @@ export default function ElevationSection({
 
                   <div className="mt-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-t border-white/[0.06] pt-3">
 
-                    <p className="text-[10px] text-white/30">
+                    <p className="text-[12px] text-white/55">
                       Horizontal axis: distance along
                       the route (km). Vertical axis:
                       elevation (m).
                     </p>
 
-                    <p className="text-[10px] text-white/30">
+                    <p className="text-[12px] text-white/55">
                       {/*
                         The same evidence rule as the card above: this
                         is the length of the geometry the profile was
@@ -385,7 +385,7 @@ export default function ElevationSection({
                 })()}
 
 
-              <p className="mt-3 text-[10px] leading-5 text-white/25">
+              <p className="mt-3 text-[12px] leading-5 text-white/55">
 
                 Elevation source: {
                   elevation.source

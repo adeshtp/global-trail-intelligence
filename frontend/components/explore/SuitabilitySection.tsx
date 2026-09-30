@@ -17,7 +17,7 @@ export default function SuitabilitySection({
     <>
       <section id="suitability" className="mt-5 scroll-mt-20 rounded-[24px] border border-white/10 bg-[#0d1825] p-7">
 
-        <p className="text-[11px] uppercase tracking-[0.2em] text-white/35">
+        <p className="text-[13px] uppercase tracking-[0.2em] text-white/60">
           Intelligence
         </p>
 
@@ -46,7 +46,7 @@ export default function SuitabilitySection({
                 difficulty labels.
               */}
               <div className="rounded-2xl border border-white/[0.08] bg-white/[0.025] p-4">
-                <p className="text-[10px] uppercase tracking-[0.15em] text-white/30">
+                <p className="text-[12px] uppercase tracking-[0.15em] text-white/55">
                   {selectedIntelligence.difficulty.source.class
                     ? "Official difficulty"
                     : selectedIntelligence.difficulty.ml
@@ -77,12 +77,12 @@ export default function SuitabilitySection({
                           {view.label}
                         </p>
                       ) : (
-                        <p className="mt-3 text-xl font-semibold text-white/60">
+                        <p className="mt-3 text-xl font-semibold text-white/75">
                           Not enough evidence
                         </p>
                       )}
 
-                      <p className="mt-1.5 text-[12px] leading-5 text-white/45">
+                      <p className="mt-1.5 text-[13px] leading-5 text-white/70">
                         {view.provenance}
                         {view.qualification
                           ? ` ${view.qualification}`
@@ -97,11 +97,11 @@ export default function SuitabilitySection({
                         than implied.
                       */}
                       {view.recordedGrade ? (
-                        <p className="mt-1 text-[11px] leading-5 text-white/30">
+                        <p className="mt-1 text-[13px] leading-5 text-white/55">
                           Recorded grade {view.recordedGrade}.
                         </p>
                       ) : view.nativeTier ? (
-                        <p className="mt-1 text-[11px] leading-5 text-white/30">
+                        <p className="mt-1 text-[13px] leading-5 text-white/55">
                           Model tier {view.nativeTier}
                           {view.estimatedRange
                             ? ` · covers ${view.estimatedRange} recorded grades`
@@ -120,10 +120,10 @@ export default function SuitabilitySection({
                 */}
                 {selectedIntelligence.difficulty.ml.aggregation ? (
                   <div className="mt-3 rounded-xl border border-white/[0.08] bg-white/[0.02] p-3">
-                    <p className="text-[10px] uppercase tracking-[0.12em] text-white/30">
+                    <p className="text-[12px] uppercase tracking-[0.12em] text-white/55">
                       Route sections scored
                     </p>
-                    <p className="mt-1.5 text-[10px] leading-4 text-white/40">
+                    <p className="mt-1.5 text-[12px] leading-4 text-white/60">
                       {selectedIntelligence.difficulty.ml
                         .aggregation.scored_members ===
                       selectedIntelligence.difficulty.ml
@@ -144,7 +144,7 @@ export default function SuitabilitySection({
                     </p>
                     {selectedIntelligence.difficulty.ml
                       .aggregation.members_disagree ? (
-                      <p className="mt-1.5 text-[10px] leading-4 text-amber-200/60">
+                      <p className="mt-1.5 text-[12px] leading-4 text-amber-200/80">
                         Sections of this route disagree about its
                         difficulty, so treat the majority as a hint
                         and check the harder sections before
@@ -164,7 +164,7 @@ export default function SuitabilitySection({
                 selectedIntelligence.difficulty.ml.available &&
                 selectedIntelligence.difficulty.ml
                   .terrain_features_used === false ? (
-                  <p className="mt-1.5 text-[11px] leading-5 text-white/35">
+                  <p className="mt-1.5 text-[13px] leading-5 text-white/60">
                     The estimate did not use this route&apos;s
                     measured elevation; it rests on recorded tags
                     and route shape. Measured terrain is shown above
@@ -184,7 +184,7 @@ export default function SuitabilitySection({
                 (selectedIntelligence.route_complexity
                   .components ?? []).length > 0 ? (
                   <div className="mt-3 rounded-xl border border-white/[0.08] bg-white/[0.02] p-3">
-                    <p className="text-[10px] uppercase tracking-[0.12em] text-white/30">
+                    <p className="text-[12px] uppercase tracking-[0.12em] text-white/55">
                       Measured demands
                     </p>
                     <ul className="mt-2 space-y-1">
@@ -192,7 +192,7 @@ export default function SuitabilitySection({
                         (part) => (
                           <li
                             key={part.component}
-                            className="text-[11px] leading-5 text-white/45"
+                            className="text-[13px] leading-5 text-white/70"
                           >
                             • {part.measured}
                           </li>
@@ -201,7 +201,7 @@ export default function SuitabilitySection({
                     </ul>
                     {selectedIntelligence.route_complexity
                       .missing_evidence.length > 0 ? (
-                      <p className="mt-1.5 text-[10px] leading-4 text-amber-200/60">
+                      <p className="mt-1.5 text-[12px] leading-4 text-amber-200/80">
                         Not measured:{" "}
                         {selectedIntelligence.route_complexity.missing_evidence.join(
                           ", ",
@@ -213,7 +213,7 @@ export default function SuitabilitySection({
                 ) : null}
               </div>
               <div className="rounded-2xl border border-white/[0.08] bg-white/[0.025] p-4">
-                <p className="text-[10px] uppercase tracking-[0.15em] text-white/30">
+                <p className="text-[12px] uppercase tracking-[0.15em] text-white/55">
                   Trail conditions
                 </p>
                 {(() => {
@@ -233,7 +233,7 @@ export default function SuitabilitySection({
                         ? "text-amber-200"
                         : tone === "bad"
                           ? "text-rose-200"
-                          : "text-white/50";
+                          : "text-white/70";
                   return (
                     <>
                       <p
@@ -250,7 +250,7 @@ export default function SuitabilitySection({
                         rendered as zero.
                       */}
                       {tone === "neutral" ? (
-                        <p className="mt-2 text-[12px] leading-5 text-white/40">
+                        <p className="mt-2 text-[13px] leading-5 text-white/60">
                           Live weather evidence is unavailable
                           for this route right now.
                         </p>
@@ -259,9 +259,9 @@ export default function SuitabilitySection({
                           {observed.map((row) => (
                             <li
                               key={row.label}
-                              className="flex items-baseline justify-between gap-4 text-[12px] leading-5"
+                              className="flex items-baseline justify-between gap-4 text-[13px] leading-5"
                             >
-                              <span className="text-white/45">
+                              <span className="text-white/70">
                                 {row.label}
                               </span>
                               <span className="shrink-0 font-semibold text-white/90">
@@ -271,7 +271,7 @@ export default function SuitabilitySection({
                           ))}
                         </ul>
                       ) : (
-                        <p className="mt-2 text-[12px] leading-5 text-white/40">
+                        <p className="mt-2 text-[13px] leading-5 text-white/60">
                           No observed weather values were
                           returned for this route.
                         </p>
@@ -283,8 +283,8 @@ export default function SuitabilitySection({
                         observations above plus route evidence, never
                         a measurement of the ground.
                       */}
-                      <p className="mt-3 text-[12px] leading-5 text-white/50">
-                        <span className="text-white/35">
+                      <p className="mt-3 text-[13px] leading-5 text-white/70">
+                        <span className="text-white/60">
                           Inferred:{" "}
                         </span>
                         {
@@ -311,7 +311,7 @@ export default function SuitabilitySection({
             selectedIntelligence.condition
               .missing_evidence.length > 0 ? (
               <details className="rounded-2xl border border-white/[0.06] bg-white/[0.015] p-4">
-                <summary className="cursor-pointer list-none text-[11px] text-white/40">
+                <summary className="cursor-pointer list-none text-[13px] text-white/60">
                   How this condition was worked out
                 </summary>
 
@@ -324,9 +324,9 @@ export default function SuitabilitySection({
                     ).map((factor) => (
                       <li
                         key={`${factor.factor}-${factor.state}`}
-                        className="space-y-1 text-[11px] leading-5 text-white/45"
+                        className="space-y-1 text-[13px] leading-5 text-white/70"
                       >
-                        <span className="mr-2 inline-block rounded-md bg-white/[0.06] px-1.5 py-0.5 text-[9px] uppercase tracking-[0.1em] text-white/50">
+                        <span className="mr-2 inline-block rounded-md bg-white/[0.06] px-1.5 py-0.5 text-[11px] uppercase tracking-[0.1em] text-white/70">
                           {CONDITION_STATE_LABELS[
                             factor.state
                           ] ?? factor.state.replaceAll("_", " ")}
@@ -341,7 +341,7 @@ export default function SuitabilitySection({
 
                 {selectedIntelligence.condition
                   .missing_evidence.length > 0 ? (
-                  <p className="mt-3 text-[11px] leading-5 text-amber-200/60">
+                  <p className="mt-3 text-[13px] leading-5 text-amber-200/80">
                     Not available for this route:{" "}
                     {missingEvidenceText(
                       selectedIntelligence.condition
@@ -354,7 +354,7 @@ export default function SuitabilitySection({
             ) : null}
 
             <div className="rounded-2xl border border-white/[0.08] bg-white/[0.025] p-4">
-              <p className="text-[10px] uppercase tracking-[0.15em] text-white/30">
+              <p className="text-[12px] uppercase tracking-[0.15em] text-white/55">
                 Suitability
               </p>
               {(() => {
@@ -384,7 +384,7 @@ export default function SuitabilitySection({
                     >
                       {headline}
                     </p>
-                    <p className="mt-2 text-[12px] leading-5 text-white/50">
+                    <p className="mt-2 text-[13px] leading-5 text-white/70">
                       {
                         selectedIntelligence
                           .suitability.headline
@@ -395,7 +395,7 @@ export default function SuitabilitySection({
                         {decisive.map((factor) => (
                           <li
                             key={factor.factor}
-                            className="text-[12px] leading-5 text-white/60"
+                            className="text-[13px] leading-5 text-white/75"
                           >
                             • {factor.evidence}
                           </li>
@@ -410,7 +410,7 @@ export default function SuitabilitySection({
                 reasons already shown above plus the sections they come
                 from, so it is not repeated here.
               */}
-              <p className="mt-3 text-[10px] leading-4 text-white/25">
+              <p className="mt-3 text-[12px] leading-4 text-white/55">
                 {selectedIntelligence.suitability.assessment_scope}
               </p>
             </div>
@@ -418,18 +418,18 @@ export default function SuitabilitySection({
             {selectedIntelligence.difficulty.ml.available ||
             selectedIntelligence.difficulty.model_readiness.ready ? (
               <details className="rounded-2xl border border-white/[0.06] bg-white/[0.015] p-4">
-                <summary className="cursor-pointer list-none text-[10px] uppercase tracking-[0.15em] text-white/30">
+                <summary className="cursor-pointer list-none text-[12px] uppercase tracking-[0.15em] text-white/55">
                   How the difficulty estimate works
                 </summary>
-                <p className="mt-3 text-[11px] leading-5 text-white/35">
+                <p className="mt-3 text-[13px] leading-5 text-white/60">
                   {selectedIntelligence.difficulty.reconciliation
                     ?.message ??
                     selectedIntelligence.difficulty.model_readiness
                       .message}
                 </p>
-                <dl className="mt-3 grid grid-cols-2 gap-2 text-[10px] text-white/25">
+                <dl className="mt-3 grid grid-cols-2 gap-2 text-[12px] text-white/55">
                   <dt>Native model tier</dt>
-                  <dd className="text-white/40">
+                  <dd className="text-white/60">
                     {selectedIntelligence.difficulty.ml.estimate ??
                       "unavailable"}
                   </dd>
@@ -440,7 +440,7 @@ export default function SuitabilitySection({
                       ? "Member agreement"
                       : "Model score"}
                   </dt>
-                  <dd className="text-white/40">
+                  <dd className="text-white/60">
                     {selectedIntelligence.difficulty.ml.available
                       ? selectedIntelligence.difficulty.ml
                           .confidence_kind ===
@@ -456,7 +456,7 @@ export default function SuitabilitySection({
                       : "n/a"}
                   </dd>
                   <dt>Model</dt>
-                  <dd className="text-white/40">
+                  <dd className="text-white/60">
                     {selectedIntelligence.difficulty.model_readiness
                       .model_name ??
                       selectedIntelligence.difficulty.ml
@@ -464,7 +464,7 @@ export default function SuitabilitySection({
                       "n/a"}
                   </dd>
                   <dt>Feature coverage</dt>
-                  <dd className="text-white/40">
+                  <dd className="text-white/60">
                     {Math.round(
                       (selectedIntelligence.difficulty.ml
                         .feature_coverage ?? 0) * 100
@@ -491,7 +491,7 @@ export default function SuitabilitySection({
                               tier
                             ] ?? tier}
                           </dt>
-                          <dd className="shrink-0 text-white/40">
+                          <dd className="shrink-0 text-white/60">
                             precision {Math.round(row.precision * 100)}%
                             {" · "}
                             recall {Math.round(row.recall * 100)}%
@@ -501,7 +501,7 @@ export default function SuitabilitySection({
                     );
                   })()}
                 </dl>
-                <p className="mt-3 text-[10px] leading-4 text-white/20">
+                <p className="mt-3 text-[12px] leading-4 text-white/55">
                   The model predicts which difficulty tier a path&apos;s
                   recorded OpenStreetMap grade falls into: walkable,
                   mountain, or alpine. It reads only label-free
@@ -519,10 +519,10 @@ export default function SuitabilitySection({
                 {selectedIntelligence.difficulty.ml.reliability
                   ?.held_out_accuracy != null ? (
                   <div className="mt-3 rounded-xl border border-white/[0.08] bg-white/[0.02] p-3">
-                    <p className="text-[10px] uppercase tracking-[0.12em] text-white/30">
+                    <p className="text-[12px] uppercase tracking-[0.12em] text-white/55">
                       Measured on real trails
                     </p>
-                    <p className="mt-1.5 text-[10px] leading-4 text-white/40">
+                    <p className="mt-1.5 text-[12px] leading-4 text-white/60">
                       Scored on geographically held-out OpenStreetMap
                       ways, under the real grade mix rather than a
                       balanced one. Accuracy{" "}
@@ -553,7 +553,7 @@ export default function SuitabilitySection({
                 ) : null}
                 {selectedIntelligence.difficulty.model_readiness
                   .limitations ? (
-                  <p className="mt-2 text-[10px] leading-4 text-white/20">
+                  <p className="mt-2 text-[12px] leading-4 text-white/55">
                     {selectedIntelligence.difficulty.model_readiness
                       .limitations}
                   </p>
@@ -562,7 +562,7 @@ export default function SuitabilitySection({
             ) : null}
           </div>
         ) : (
-          <p className="mt-5 text-sm leading-7 text-white/45">
+          <p className="mt-5 text-sm leading-7 text-white/70">
             Select a verified trail to load route difficulty, condition likelihood, and suitability context.
           </p>
         )}

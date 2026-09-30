@@ -28,7 +28,7 @@ export default function AssistantSection({
     <>
       <section id="assistant" className="mt-5 scroll-mt-20 rounded-[24px] border border-white/10 bg-[#0d1825] p-7">
 
-        <p className="text-[11px] uppercase tracking-[0.2em] text-white/35">
+        <p className="text-[13px] uppercase tracking-[0.2em] text-white/60">
           Assistant
         </p>
 
@@ -51,7 +51,7 @@ export default function AssistantSection({
                 }
                 placeholder="Ask about conditions, difficulty, or gear…"
                 maxLength={600}
-                className="min-w-0 flex-1 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-white outline-none placeholder:text-white/25 focus:border-sky-300/40"
+                className="min-w-0 flex-1 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-white outline-none placeholder:text-white/55 focus:border-sky-300/40"
               />
               <button
                 type="submit"
@@ -59,13 +59,13 @@ export default function AssistantSection({
                   assistantLoading ||
                   !assistantQuestion.trim()
                 }
-                className="rounded-xl border border-sky-300/20 bg-sky-300/[0.08] px-4 py-2 text-xs font-semibold text-sky-200 transition hover:bg-sky-300/[0.14] disabled:cursor-wait disabled:opacity-60"
+                className="rounded-xl border border-sky-300/20 bg-sky-300/[0.08] px-4 py-2 text-[13px] font-semibold text-sky-200 transition hover:bg-sky-300/[0.14] disabled:cursor-wait disabled:opacity-60"
               >
                 {assistantLoading ? "Thinking…" : "Ask"}
               </button>
             </div>
             {assistantError ? (
-              <p className="mt-3 text-xs text-amber-200/70">
+              <p className="mt-3 text-[13px] text-amber-200/85">
                 {assistantError}
               </p>
             ) : null}
@@ -73,7 +73,7 @@ export default function AssistantSection({
               <div className="mt-4 rounded-2xl border border-white/[0.08] bg-white/[0.025] p-4">
                 {assistantAnswer.status ===
                   "not_in_context" ? (
-                  <p className="mb-3 rounded-lg border border-amber-300/20 bg-amber-300/[0.05] px-3 py-2 text-[10px] leading-4 text-amber-100/75">
+                  <p className="mb-3 rounded-lg border border-amber-300/20 bg-amber-300/[0.05] px-3 py-2 text-[12px] leading-4 text-amber-100/75">
                     This question is not answered from the trail
                     data, so nothing was invented for it.
                   </p>
@@ -94,7 +94,7 @@ export default function AssistantSection({
             ) : null}
           </form>
         ) : (
-          <p className="mt-5 text-sm leading-7 text-white/45">
+          <p className="mt-5 text-sm leading-7 text-white/70">
             Select a verified trail to ask a grounded question about its intelligence.
           </p>
         )}

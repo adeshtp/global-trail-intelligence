@@ -21,7 +21,7 @@ export default function TrailOverviewSection({
 
           <div>
 
-            <p className="text-[11px] uppercase tracking-[0.2em] text-white/35">
+            <p className="text-[13px] uppercase tracking-[0.2em] text-white/60">
               Selected trail
             </p>
 
@@ -36,7 +36,7 @@ export default function TrailOverviewSection({
             </h2>
 
 
-            <p className="mt-4 max-w-2xl text-sm leading-7 text-white/45">
+            <p className="mt-4 max-w-2xl text-sm leading-7 text-white/70">
 
               The selected route is shown from
               its verified geographic geometry.
@@ -62,7 +62,7 @@ export default function TrailOverviewSection({
 
               <div className="flex items-center justify-between">
 
-                <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-white/35">
+                <p className="text-[12px] font-medium uppercase tracking-[0.16em] text-white/60">
                   Distance
                 </p>
 
@@ -83,14 +83,14 @@ export default function TrailOverviewSection({
                     : "—"
                 }
 
-                <span className="ml-1 text-sm font-medium text-white/35">
+                <span className="ml-1 text-sm font-medium text-white/60">
                   km
                 </span>
 
               </p>
 
 
-              <p className="mt-1 text-[11px] text-white/30">
+              <p className="mt-1 text-[13px] text-white/55">
                 {mappedLengthLabel()}
               </p>
 
@@ -102,12 +102,12 @@ export default function TrailOverviewSection({
               */}
               {selectedTrailGeometry.relation_completeness?.note ? (
                 <details className="group mt-2">
-                  <summary className="cursor-pointer list-none rounded-lg border border-amber-300/20 bg-amber-300/[0.05] px-2.5 py-1.5 text-[10px] leading-4 text-amber-100/80">
+                  <summary className="cursor-pointer list-none rounded-lg border border-amber-300/20 bg-amber-300/[0.05] px-2.5 py-1.5 text-[12px] leading-4 text-amber-100/80">
                     OpenStreetMap currently maps only this section of
                     the named route. The full real-world trek may be
                     longer.
                   </summary>
-                  <p className="mt-1.5 rounded-lg border border-white/[0.06] bg-white/[0.02] px-2.5 py-2 text-[10px] leading-4 text-white/40">
+                  <p className="mt-1.5 rounded-lg border border-white/[0.06] bg-white/[0.02] px-2.5 py-2 text-[12px] leading-4 text-white/60">
                     {selectedTrailGeometry.relation_completeness.note}
                   </p>
                 </details>
@@ -122,7 +122,7 @@ export default function TrailOverviewSection({
 
               <div className="flex items-center justify-between">
 
-                <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-white/35">
+                <p className="text-[12px] font-medium uppercase tracking-[0.16em] text-white/60">
                   Difficulty
                 </p>
 
@@ -148,7 +148,7 @@ export default function TrailOverviewSection({
               </p>
 
 
-              <p className="mt-1 text-[11px] text-white/30">
+              <p className="mt-1 text-[13px] text-white/55">
                 {
                   selectedTrailGeometry.difficulty
                     ? "Official OSM scale"
@@ -165,7 +165,7 @@ export default function TrailOverviewSection({
 
               <div className="flex items-center justify-between">
 
-                <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-white/35">
+                <p className="text-[12px] font-medium uppercase tracking-[0.16em] text-white/60">
                   Surface
                 </p>
 
@@ -182,7 +182,7 @@ export default function TrailOverviewSection({
               </p>
 
 
-              <p className="mt-1 text-[11px] text-white/30">
+              <p className="mt-1 text-[13px] text-white/55">
                 Trail surface
               </p>
 
@@ -195,7 +195,7 @@ export default function TrailOverviewSection({
 
               <div className="flex items-center justify-between">
 
-                <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-white/35">
+                <p className="text-[12px] font-medium uppercase tracking-[0.16em] text-white/60">
                   Route
                 </p>
 
@@ -212,7 +212,7 @@ export default function TrailOverviewSection({
               </p>
 
 
-              <p className="mt-1 text-[11px] text-white/30">
+              <p className="mt-1 text-[13px] text-white/55">
                 Route classification
               </p>
 
