@@ -37,10 +37,12 @@ import {
 import {
   API_BASE_URL,
   ASSISTANT_TIMEOUT_MS,
+  DEFAULT_RESULT_VIEW,
   DISCOVERY_TIMEOUT_MS,
   INTELLIGENCE_TIMEOUT_MS,
   PRODUCTS_TIMEOUT_MS,
   abortAfter,
+  applyViewParams,
 } from "./helpers";
 import type {
   AssistantResponse,
@@ -49,6 +51,7 @@ import type {
   Location,
   MapTrail,
   ProductSearchResponse,
+  ResultView,
   SelectedTrail,
   SelectedTrailAnalysis,
   TrailDiscoveryResponse,
@@ -196,6 +199,17 @@ function ExplorePageContent() {
     [number, number, number, number] | null
   >(null);
   const loadMoreAbortRef = useRef<AbortController | null>(null);
+
+  // How the list is ordered and narrowed. The ref is what requests read, so
+  // "load more" and the enrichment always continue the view the page was
+  // asked for, whatever the state has moved on to.
+  const [view, setView] = useState<ResultView>(DEFAULT_RESULT_VIEW);
+  const viewRef = useRef<ResultView>(DEFAULT_RESULT_VIEW);
+  const viewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [viewMatch, setViewMatch] = useState<{
+    matched: number;
+    before: number;
+  } | null>(null);
 
 
   const [
@@ -432,6 +446,7 @@ function ExplorePageContent() {
       if (lastSearchBoundsRef.current) {
         params.set("bbox", lastSearchBoundsRef.current.join(","));
       }
+      applyViewParams(params, viewRef.current);
 
       const response = await fetch(
         `${API_BASE_URL}/api/osm/trails/discover?${params.toString()}`,
@@ -504,6 +519,45 @@ function ExplorePageContent() {
     }
   }
 
+  /*
+   * A new sort or filter is the same search of the same place, ranked again
+   * from page 1, so it goes through the guarded discovery path (new request id,
+   * anything in flight aborted). The provider rows are cached server side, so
+   * this costs a re-ranking, not new provider calls. "On the map only" only
+   * hides rows here and needs no request. Rapid toggling is coalesced, because
+   * the server finishes a ranking it has started even when the browser gives up.
+   */
+  function handleViewChange(next: ResultView) {
+    const previous = viewRef.current;
+    viewRef.current = next;
+    setView(next);
+
+    const rankingChanged =
+      next.sort !== previous.sort ||
+      next.length !== previous.length ||
+      [...next.difficulty].sort().join() !==
+        [...previous.difficulty].sort().join();
+    const searched = lastSearchLocationRef.current;
+    if (!rankingChanged || !searched) {
+      return;
+    }
+
+    if (viewTimerRef.current) {
+      clearTimeout(viewTimerRef.current);
+    }
+    viewTimerRef.current = setTimeout(() => {
+      viewTimerRef.current = null;
+      void discoverTrails(
+        searched,
+        lastSearchQueryRef.current,
+        lastSearchNameRef.current,
+        lastSearchBroadRef.current,
+        lastSearchBoundsRef.current,
+        lastPlaceKindRef.current
+      );
+    }, 400);
+  }
+
   async function discoverTrails(
     newLocation: Location,
     searchQuery: string,
@@ -512,6 +566,11 @@ function ExplorePageContent() {
     searchBounds: [number, number, number, number] | null,
     placeKind = "area"
   ) {
+    // A ranking change still waiting to fire belongs to the previous search.
+    if (viewTimerRef.current) {
+      clearTimeout(viewTimerRef.current);
+      viewTimerRef.current = null;
+    }
     const requestId = ++discoveryRequestRef.current;
     discoveryAbortRef.current?.abort();
     enrichmentAbortRef.current?.abort();
@@ -572,6 +631,8 @@ function ExplorePageContent() {
     if (searchBounds) {
       params.set("bbox", searchBounds.join(","));
     }
+    // The enrichment below reuses these params, so both stages agree.
+    applyViewParams(params, viewRef.current);
 
     const applyResults = (
       data: TrailDiscoveryResponse,
@@ -595,6 +656,14 @@ function ExplorePageContent() {
       setCoverage(data.coverage);
       setResultCounts(data.result_counts);
       setPagination(data.pagination);
+      setViewMatch(
+        data.view?.filtered
+          ? {
+              matched: data.view.matched,
+              before: data.view.before_filters,
+            }
+          : null
+      );
 
       if (
         data.status === "no_provider_data" ||
@@ -1327,6 +1396,9 @@ function ExplorePageContent() {
         setMapExpanded={setMapExpanded}
         trailError={trailError}
         trails={trails}
+        view={view}
+        viewMatch={viewMatch}
+        onViewChange={handleViewChange}
       />
       )}
 

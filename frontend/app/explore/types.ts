@@ -30,6 +30,7 @@ export type MapTrail = {
 
 
 export type TrailDiscoveryResponse = {
+  view?: ResultViewSummary;
   status?:
     | "success"
     | "partial"
@@ -554,4 +555,37 @@ export type AssistantResponse = {
   provider_note?: string;
   retrieved_sources?: string[];
   corpus_size?: number;
+};
+
+
+/*
+ * How the trail list is ordered and narrowed. Sort, difficulty and length are
+ * applied by the server to the whole ranked set (a page-only sort would be
+ * wrong whenever more pages exist); "on the map only" only hides rows that
+ * have no shape, which the server always lists after the mapped ones.
+ */
+export type SortKey =
+  | "relevance"
+  | "nearest"
+  | "longest"
+  | "shortest"
+  | "easiest";
+
+export type DifficultyBucket = "Easy" | "Moderate" | "Hard" | "Very Hard";
+
+export type LengthBucket = "short" | "medium" | "long";
+
+export type ResultView = {
+  sort: SortKey;
+  difficulty: DifficultyBucket[];
+  length: LengthBucket | null;
+  mappedOnly: boolean;
+};
+
+/** What the server reports back about the view it applied. */
+export type ResultViewSummary = {
+  sort: SortKey;
+  filtered: boolean;
+  matched: number;
+  before_filters: number;
 };

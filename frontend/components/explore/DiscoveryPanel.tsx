@@ -5,10 +5,13 @@ import { type Dispatch, type SetStateAction } from "react";
 import type {
   Location,
   MapTrail,
+  ResultView,
   SelectedTrail,
   TrailDiscoveryResponse,
 } from "@/app/explore/types";
+import { DEFAULT_RESULT_VIEW, activeFilterCount, serverFiltered } from "@/app/explore/helpers";
 import CesiumMap from "@/components/CesiumMap";
+import ResultControls from "@/components/explore/ResultControls";
 import TrailSidebar, { Trail } from "@/components/TrailSidebar";
 
 type DiscoveryPanelProps = {
@@ -30,6 +33,9 @@ type DiscoveryPanelProps = {
   setMapExpanded: Dispatch<SetStateAction<boolean>>;
   trailError: string | null;
   trails: Trail[];
+  view: ResultView;
+  viewMatch: { matched: number; before: number } | null;
+  onViewChange: (view: ResultView) => void;
 };
 
 export default function DiscoveryPanel({
@@ -51,7 +57,24 @@ export default function DiscoveryPanel({
   setMapExpanded,
   trailError,
   trails,
+  view,
+  viewMatch,
+  onViewChange,
 }: DiscoveryPanelProps) {
+  // Trails with no verified shape are always listed after the mapped ones, so
+  // hiding them here changes no order.
+  const visibleTrails = view.mappedOnly
+    ? trails.filter((trail) => trail.map_ready)
+    : trails;
+  const filtersActive = activeFilterCount(view) > 0;
+  // Trails exist, and the filters removed all of them. A search that found
+  // nothing, or a provider that failed, says so elsewhere and is not this.
+  const filteredToNothing =
+    Boolean(location) &&
+    filtersActive &&
+    ((viewMatch !== null && viewMatch.before > 0) ||
+      (view.mappedOnly && (resultCounts?.relevance_accepted ?? 0) > 0));
+
   return (
     <>
       <section
@@ -65,7 +88,7 @@ export default function DiscoveryPanel({
 
             <TrailSidebar
                 
-              trails={trails}
+              trails={visibleTrails}
                 
               loading={loadingTrails}
                 
@@ -74,6 +97,41 @@ export default function DiscoveryPanel({
               onTrailSelect={handleTrailSelect}
 
               counts={resultCounts}
+
+              controls={
+                location ? (
+                  <ResultControls
+                    view={view}
+                    onChange={onViewChange}
+                    match={serverFiltered(view) ? viewMatch : null}
+                  />
+                ) : undefined
+              }
+
+              emptyState={
+                filteredToNothing ? (
+                  <div className="rounded-2xl border border-dashed border-white/15 bg-white/[0.025] px-5 py-8 text-center">
+                    <p className="text-sm text-white/85">
+                      No trails match these filters.
+                    </p>
+                    <p className="mt-2 text-[13px] leading-5 text-white/65">
+                      Try a wider length or another difficulty.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onViewChange({
+                          ...DEFAULT_RESULT_VIEW,
+                          sort: view.sort,
+                        })
+                      }
+                      className="mt-4 rounded-xl border border-white/20 px-4 py-2 text-[13px] font-medium text-white transition hover:bg-white/10"
+                    >
+                      Clear filters
+                    </button>
+                  </div>
+                ) : undefined
+              }
               
             />
 

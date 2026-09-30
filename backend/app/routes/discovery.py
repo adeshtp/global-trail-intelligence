@@ -3727,6 +3727,32 @@ async def _run_discovery(
     )
 
 
+def _discovery_status(
+    *,
+    provider_failed: bool,
+    no_provider_data: bool,
+    has_results: bool,
+    filtered_to_nothing: bool,
+) -> str:
+    """
+    Success, partial, unavailable, no_provider_data or empty.
+
+    Filters that leave nothing are not an outage and not an empty area: trails
+    existed, so a failing provider makes the search partial and a healthy one
+    makes it a success with nothing matching.
+    """
+    has_trails = has_results or filtered_to_nothing
+    if provider_failed and has_trails:
+        return "partial"
+    if provider_failed:
+        return "unavailable"
+    if no_provider_data:
+        return "no_provider_data"
+    if has_trails:
+        return "success"
+    return "empty"
+
+
 async def _assemble_discovery_result(
     *,
     place: str,
@@ -4054,17 +4080,15 @@ async def _assemble_discovery_result(
     # outage was reported as a successful empty search.
     provider_failed = any(provider_errors.values())
 
-    if provider_failed and ordered:
-        status = "partial"
-    elif provider_failed:
-        status = "unavailable"
-    elif no_provider_data:
-        status = "no_provider_data"
-    elif ordered or (view.filtered and trails_before_view):
-        # A filter that matches nothing is not an empty area.
-        status = "success"
-    else:
-        status = "empty"
+    status = _discovery_status(
+        provider_failed=provider_failed,
+        no_provider_data=no_provider_data,
+        has_results=bool(ordered),
+        # Trails were found and the caller's filters removed every one.
+        filtered_to_nothing=bool(
+            view.filtered and trails_before_view and not ordered
+        ),
+    )
 
     center_lat = (search_bbox[1] + search_bbox[3]) / 2.0
     area_km2 = round(

@@ -1,5 +1,7 @@
 "use client";
 
+import type { ReactNode } from "react";
+
 type Trail = {
   trail_id: string;
   osm_id: number | null;
@@ -100,6 +102,13 @@ type TrailSidebarProps = {
   ) => void;
 
   counts?: ResultCounts;
+
+  // Sort and filter controls, shown between the summary and the list.
+  controls?: ReactNode;
+
+  // Replaces the default "search a location" message when the list is empty
+  // for a reason the parent knows (for example, filters that match nothing).
+  emptyState?: ReactNode;
 };
 
 function formatDistance(
@@ -270,6 +279,8 @@ export default function TrailSidebar({
   selectedTrail,
   onTrailSelect,
   counts,
+  controls,
+  emptyState,
 }: TrailSidebarProps) {
   /*
    * Groups are computed once and shared by the header counts and the list
@@ -391,6 +402,8 @@ export default function TrailSidebar({
         </p>
       </div>
 
+      {controls}
+
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
         {loading && (
           <div className="space-y-3">
@@ -412,7 +425,12 @@ export default function TrailSidebar({
         )}
 
         {!loading &&
-          trails.length === 0 && (
+          trails.length === 0 &&
+          emptyState}
+
+        {!loading &&
+          trails.length === 0 &&
+          !emptyState && (
             <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.025] px-5 py-8 text-center">
               <p className="text-sm text-white/75">
                 Search a location to discover available

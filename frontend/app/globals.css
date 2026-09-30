@@ -1,4 +1,28 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+
+/*
+ * Tokens read by the shadcn/ui components in components/ui. They are set to
+ * the product's dark palette directly (not through --background /
+ * --foreground below, which the page body still uses), so a popover or select
+ * matches the cards it opens over. Text on these surfaces is 4.5:1 or better.
+ */
+@theme inline {
+  --color-background: #0d1825;
+  --color-foreground: #f2f5f8;
+  --color-popover: #0d1825;
+  --color-popover-foreground: #f2f5f8;
+  --color-primary: #ffffff;
+  --color-primary-foreground: #07111f;
+  --color-muted: rgb(255 255 255 / 0.06);
+  --color-muted-foreground: rgb(255 255 255 / 0.65);
+  --color-accent: rgb(255 255 255 / 0.1);
+  --color-accent-foreground: #ffffff;
+  --color-destructive: #fca5a5;
+  --color-border: rgb(255 255 255 / 0.14);
+  --color-input: rgb(255 255 255 / 0.16);
+  --color-ring: rgb(125 211 252 / 0.6);
+}
 
 :root {
   --background: #f3f1e8;

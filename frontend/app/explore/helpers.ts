@@ -1,4 +1,7 @@
+import { gradesForProduct } from "@/components/difficultyDisplay";
 import type {
+  LengthBucket,
+  ResultView,
   ElevationProfilePoint,
   TrailIntelligenceResponse,
 } from "./types";
@@ -256,3 +259,57 @@ export const CONDITION_STATE_LABELS: Record<
   moderately_steep: "moderately steep",
   high_cold_exposed: "high and cold",
 };
+
+
+export const DEFAULT_RESULT_VIEW: ResultView = {
+  sort: "relevance",
+  difficulty: [],
+  length: null,
+  mappedOnly: false,
+};
+
+/** Length buckets in km: short under 5, medium 5 to 15, long over 15. */
+export const LENGTH_BUCKETS: Record<
+  LengthBucket,
+  { label: string; min?: number; max?: number }
+> = {
+  short: { label: "Under 5 km", max: 5 },
+  medium: { label: "5–15 km", min: 5, max: 15 },
+  long: { label: "Over 15 km", min: 15 },
+};
+
+/** The view as query parameters the discovery endpoints understand. */
+export function applyViewParams(
+  params: URLSearchParams,
+  view: ResultView
+): void {
+  if (view.sort !== "relevance") {
+    params.set("sort", view.sort);
+  }
+  for (const label of view.difficulty) {
+    for (const grade of gradesForProduct(label)) {
+      params.append("grade", grade);
+    }
+  }
+  const range = view.length ? LENGTH_BUCKETS[view.length] : null;
+  if (range?.min !== undefined) {
+    params.set("min_length_km", String(range.min));
+  }
+  if (range?.max !== undefined) {
+    params.set("max_length_km", String(range.max));
+  }
+}
+
+/** Filters that narrow the list; sort is not one. */
+export function activeFilterCount(view: ResultView): number {
+  return (
+    view.difficulty.length +
+    (view.length ? 1 : 0) +
+    (view.mappedOnly ? 1 : 0)
+  );
+}
+
+/** True when the server, not just the browser, is narrowing the list. */
+export function serverFiltered(view: ResultView): boolean {
+  return view.difficulty.length > 0 || view.length !== null;
+}

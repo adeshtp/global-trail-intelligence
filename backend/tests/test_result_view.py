@@ -233,5 +233,36 @@ class ResponseFollowsTheFilterTests(unittest.TestCase):
         self.assertEqual(summary["before_filters"], 6)
 
 
+class StatusTests(unittest.TestCase):
+    """A filter that matches nothing is never an outage or an empty area."""
+
+    def _status(self, **kwargs) -> str:
+        args = dict(
+            provider_failed=False,
+            no_provider_data=False,
+            has_results=False,
+            filtered_to_nothing=False,
+        )
+        args.update(kwargs)
+        return discovery._discovery_status(**args)
+
+    def test_existing_statuses_are_unchanged(self) -> None:
+        self.assertEqual(self._status(provider_failed=True, has_results=True), "partial")
+        self.assertEqual(self._status(provider_failed=True), "unavailable")
+        self.assertEqual(self._status(no_provider_data=True), "no_provider_data")
+        self.assertEqual(self._status(has_results=True), "success")
+        self.assertEqual(self._status(), "empty")
+
+    def test_a_filter_matching_nothing_is_not_unavailable(self) -> None:
+        # Trails were found, then filtered away, while a provider also failed.
+        self.assertEqual(
+            self._status(provider_failed=True, filtered_to_nothing=True),
+            "partial",
+        )
+
+    def test_a_filter_matching_nothing_is_a_success_when_providers_are_fine(self) -> None:
+        self.assertEqual(self._status(filtered_to_nothing=True), "success")
+
+
 if __name__ == "__main__":
     unittest.main()

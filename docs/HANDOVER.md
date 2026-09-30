@@ -119,6 +119,31 @@ Outage measurements (hung and refused providers, real timeouts):
   landing page, Explore, the sidebar, the map controls and every section.
   Disabled states keep their reduced opacity on purpose. Checked in screenshots
   before and after (weather, gear, discovery list); no overflow.
+- **Sort and filter for the trail list** (requested after the fixes).
+  `/trails/discover` and `/trails/enrichment` take `sort` (relevance, nearest,
+  longest, shortest, easiest), repeated `grade` (recorded OSM grades, validated
+  against the model contract) and `min_length_km` / `max_length_km`. They apply
+  to the **whole ranked set before it is cut into pages**, so page 2 continues
+  the order, every count follows the filter, and a change reads the cached
+  harvest (no provider calls). Ties fall back to the default ranking so the
+  order is total. Trails with no shape have no length or grade, so a filter
+  hides them rather than pretending they match. The response carries a `view`
+  summary. Bug found and fixed on the way: a filter that removed every trail
+  while a provider had also failed was reported as `unavailable` (an outage);
+  `_discovery_status` now reports `partial` or `success`.
+  **UI:** one row above the list in the discovery panel: a Sort select and a
+  Filters popover (Difficulty Easy/Moderate/Hard/Very Hard, Length, "On the map
+  only", Clear) with an active-count badge and a "3 of 61 trails match" line.
+  Changing sort, difficulty or length is a new search of the same place at page
+  1 through the guarded discovery path (coalesced for 400 ms, and enrichment
+  and "Show more" carry the same view); "On the map only" hides rows in the
+  browser. A filter matching nothing shows an empty state with Clear.
+  **shadcn/ui** was introduced for this (Select, Popover, ToggleGroup, Switch,
+  Button, Badge in `components/ui`, `lib/utils.ts`); its theme tokens are
+  mapped to the existing dark palette in `globals.css` and do not touch the
+  body's `--background`/`--foreground`. Note the shadcn CLI resolved `cn` as an
+  unrelated npm package; it was removed in favour of the standard
+  `clsx` + `tailwind-merge` helper.
 - **Two whole-branch code reviews** (backend and frontend). Backend findings, all
   fixed with tests in `test_review_findings.py`: half-read harvests were cached;
   the breaker admitted every caller as a probe after cooldown; an untestable
@@ -144,6 +169,7 @@ Outage measurements (hung and refused providers, real timeouts):
 | No provider status in `/health` | Optional and the first thing to cut. |
 | Photon for suggestions, Nominatim for the search | Nominatim's policy forbids autocomplete; Photon is OSM-based and built for it, so suggestions match our data. The public Photon instance has a fair-use limit: watch it, and self-host or switch provider if usage grows. |
 | Suggestion pick uses a lookup by OSM id, not a text search | Photon's fields differ from Nominatim's (`osm_key`/`osm_value`, no `addresstype`, different extent order), and re-searching the label could rank a different place than the one clicked. |
+| Sort/filter on the server, controls beside the list (not in the search box) | A page-only sort is wrong whenever more pages exist ("nearest of the loaded ones"). The search box picks the place; these act on the list, so they sit above it where the result changes. |
 | Turn minification off, not work around it | Smallest change that restores the map; guarded by `check:bundle`. |
 | Commit format `<type>(api): 4-8 word message`, tests first, dataclasses/pydantic for new structures | The user's standing rules. |
 
