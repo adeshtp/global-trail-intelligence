@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import math
+from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any
 
@@ -17,7 +18,12 @@ from app.services.difficulty import (
     source_difficulty,
 )
 from app.services.elevation import get_elevation_profile
-from app.services.postpass import get_relation, get_way
+from app.services.postpass import (
+    get_relation,
+    get_way,
+    get_ways,
+    measure_geometry_completeness,
+)
 from app.services.intelligence import (
     condition_likelihood,
     gear_recommendations,
@@ -27,7 +33,12 @@ from app.services.products import discover_products
 from app.services.route_complexity import route_complexity
 from app.services.rate_limit import enrichment_limiter, intelligence_limiter
 from app.services.assistant import answer_trail_question
-from app.services.weather import get_weather
+from app.services.weather import (
+    estimate_walking_hours,
+    get_route_weather,
+    get_weather,
+    select_route_points,
+)
 
 
 router = APIRouter(
@@ -373,6 +384,7 @@ async def verify_selected_trail(
             "surface": way.surface,
             "trail_visibility": way.trail_visibility,
             "source_difficulty": way.sac_scale,
+            "assisted_trail": way.assisted_trail,
             "geometry": server_geometry,
             "geometry_hash": _geometry_hash(server_geometry),
             "member_way_ids": [way.way_id],
@@ -516,12 +528,15 @@ async def _verified_member_trails(
         ]
     except (TypeError, ValueError):
         return []
+    # One bulk lookup for every member, not one query per way: a long route has
+    # hundreds of members and fetching them one by one took minutes.
+    try:
+        ways = await get_ways(ordered_ids)
+    except Exception:
+        return []
     member_trails: list[dict[str, Any]] = []
     for member_id in ordered_ids:
-        try:
-            way = await get_way(member_id)
-        except Exception:
-            continue
+        way = ways.get(member_id)
         if way is None or not way.geometry:
             continue
         member_trails.append(
@@ -539,6 +554,9 @@ async def _verified_member_trails(
                 "incline_direction": way.incline_direction,
                 "width": way.width,
                 "assisted_trail": way.assisted_trail,
+                # Read by the activity classifier only. The difficulty
+                # model's features do not include it.
+                "sac_scale": way.sac_scale,
                 "length_km": way.length_km,
                 "geometry": way.geometry,
                 "source": way.source,
@@ -598,6 +616,11 @@ def normalize_selected_geometry(
             else "fragmented"
         ),
         "component_count": len(normalized_parts),
+        # Gap measurement over the same parts. `geometry_status` and
+        # `component_count` above count pieces joined only at identical
+        # points; this also treats ends within a few metres as touching and
+        # says how large the remaining gaps are.
+        "completeness": asdict(measure_geometry_completeness(normalized_parts)),
         "coordinate_count": sum(
             len(part) for part in normalized_parts
         ),
@@ -703,14 +726,57 @@ async def get_selected_trail_intelligence(
             detail="Selected geometry has no representative midpoint",
         )
 
-    weather_result, elevation_result = await asyncio.gather(
+    # Elevation says where along the route the weather should be read: start,
+    # highest, lowest, end and middle, each at its own height. A route with only
+    # one distinct place on it, or with no profile, is weathered at its
+    # midpoint as before.
+    #
+    # The midpoint reading is started alongside elevation rather than after it,
+    # so a hung provider is waited on once and not twice (measured 50 s
+    # against 30 s). It is a cheap, cached call, and it is dropped when the
+    # route has real points to read.
+    #
+    # The weather is read over the time the walk is estimated to take. That
+    # needs the ascent, which arrives with elevation, so this early fallback
+    # uses the distance alone and the route reading below uses both.
+    distance_km = analysis.get("distance_km")
+    midpoint_weather = asyncio.create_task(
         get_weather(
             latitude=midpoint[1],
             longitude=midpoint[0],
-        ),
+            window_hours=estimate_walking_hours(distance_km, None),
+        )
+    )
+    # A dropped or failed fallback must not log "exception never retrieved".
+    midpoint_weather.add_done_callback(
+        lambda task: None if task.cancelled() else task.exception()
+    )
+    (elevation_result,) = await asyncio.gather(
         get_elevation_profile(analysis["geometry"]),
         return_exceptions=True,
     )
+    route_points = (
+        []
+        if isinstance(elevation_result, Exception)
+        else select_route_points(elevation_result.get("profile") or [])
+    )
+    try:
+        if route_points:
+            # The midpoint reading is left to finish and is simply not used.
+            # Cancelling it saved no network call (its fetch is shared and
+            # shielded) and left that fetch's in-flight entry with no one to
+            # remove it.
+            ascent = (
+                (elevation_result.get("metrics") or {}).get("elevation_gain_m")
+            )
+            weather_result = await get_route_weather(
+                route_points,
+                window_hours=estimate_walking_hours(distance_km, ascent),
+            )
+        else:
+            weather_result = await midpoint_weather
+    except Exception as exc:
+        weather_result = exc
 
     provider_status: dict[str, str] = {}
     if isinstance(weather_result, Exception):
@@ -798,8 +864,18 @@ async def get_selected_trail_intelligence(
             "basis": (
                 "Representative midpoint of the selected route geometry, "
                 "not the originally searched place."
+                + (
+                    f" Conditions are the worst case across "
+                    f"{weather['sample_count']} points sampled along the "
+                    f"route, each at its own elevation."
+                    if weather
+                    and weather.get("aggregation") == "worst_case"
+                    and weather.get("sample_count", 0) > 1
+                    else ""
+                )
             ),
         },
+        "weather_samples": (weather or {}).get("samples") or [],
         "analysis": analysis_response,
         "terrain": terrain,
         "weather": weather,
@@ -816,6 +892,7 @@ async def get_selected_trail_intelligence(
         "condition": condition,
         "suitability": suitability,
         "gear": gear,
+        "activity": gear["activity"],
         "route_complexity": complexity,
         "providers": provider_status,
     }

@@ -43,6 +43,7 @@ from typing import Any
 import httpx
 
 from app.core.config import settings
+from app.services.rate_limit import CircuitBreaker, ProviderOutage
 
 
 logger = logging.getLogger(__name__)
@@ -118,6 +119,11 @@ OVERPASS_USER_AGENT = (
 # shared public endpoint and backpressure against stampedes when the primary
 # is down and every tile wants the fallback at once.
 _OVERPASS_SEMAPHORE = asyncio.Semaphore(1)
+
+# Opens after consecutive outage failures. Overpass allows one request at a
+# time with a long timeout, so an outage would otherwise serialise the full
+# failure cost across every query in a search.
+overpass_breaker = CircuitBreaker("overpass")
 
 _CACHE: OrderedDict[
     tuple[Any, ...],
@@ -205,6 +211,25 @@ def _ql_regex(value: str) -> str:
 
 
 async def _overpass_post(query: str) -> dict[str, Any]:
+    if not overpass_breaker.allow():
+        raise ProviderOutage(
+            "Overpass is temporarily skipped after repeated failures; "
+            "it will be tried again shortly"
+        )
+    try:
+        payload = await _overpass_request(query)
+    except ProviderOutage:
+        overpass_breaker.record_failure()
+        raise
+    except Exception:
+        # The server answered, even if it refused this query.
+        overpass_breaker.record_success()
+        raise
+    overpass_breaker.record_success()
+    return payload
+
+
+async def _overpass_request(query: str) -> dict[str, Any]:
     """
     Run one Overpass QL query and return the parsed JSON document.
 
@@ -236,7 +261,7 @@ async def _overpass_post(query: str) -> dict[str, Any]:
                         data={"data": query},
                     )
         except Exception as exc:
-            raise RuntimeError(
+            raise ProviderOutage(
                 f"Overpass request failed: {exc}"
             ) from exc
 
@@ -248,7 +273,14 @@ async def _overpass_post(query: str) -> dict[str, Any]:
             f"{response.text.strip()[:300]}"
         )
         if response.status_code != 429 or attempt > 0:
-            raise RuntimeError(last_error)
+            # A server error, or throttling that persisted after the retry,
+            # says the provider is not serving us. Anything else is a refusal
+            # of this one query.
+            raise (
+                ProviderOutage(last_error)
+                if response.status_code >= 500 or response.status_code == 429
+                else RuntimeError(last_error)
+            )
         logger.info(
             "Overpass rate-limited the request; retrying once after %.0fs",
             OVERPASS_429_BACKOFF_SECONDS,

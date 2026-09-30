@@ -1264,6 +1264,79 @@ class ProductCardTests(unittest.TestCase):
         group = result["groups"][0]
         self.assertEqual(group["product_results"], [])
         self.assertEqual(group["card"]["mode"], "shopping_fallback")
+        # An editorial page must never be the "Shop options" destination.
+        self.assertNotEqual(
+            group["card"]["url"], "https://example.org/best-jackets"
+        )
+        self.assertTrue(
+            group["card"]["url"].startswith("https://www.google.com/search")
+        )
+        self.assertIsNone(group["card"]["retailer"])
+
+    def test_shop_options_skips_editorial_for_a_category_page(self) -> None:
+        """
+        Search ranking usually puts the review first. The destination must be
+        the first result that is not editorial, even when it ranks lower.
+        """
+        result = self._run(
+            [self._item("Insulated jacket")],
+            [
+                {
+                    "title": "Best insulated jackets 2026: tested",
+                    "url": "https://example.org/best-jackets",
+                    "display_title": "Best insulated jackets 2026",
+                    "kind": "related_web_result",
+                    "editorial": True,
+                },
+                {
+                    "title": "Insulated jackets",
+                    "url": "https://shop.example/c/insulated-jackets",
+                    "display_title": "Insulated jackets",
+                    "retailer": "Shop",
+                    "kind": "related_web_result",
+                    "editorial": False,
+                },
+            ],
+            ["https://cdn.example/jacket.jpg"],
+        )
+        card = result["groups"][0]["card"]
+        self.assertEqual(card["mode"], "shopping_fallback")
+        self.assertEqual(
+            card["url"], "https://shop.example/c/insulated-jackets"
+        )
+        self.assertEqual(card["retailer"], "Shop")
+
+    def test_shop_options_skips_editorial_urls_the_title_check_missed(
+        self,
+    ) -> None:
+        """
+        A blog or review path is editorial even when its title carries none of
+        the wording the title check looks for.
+        """
+        for url in (
+            "https://gearblog.example/blog/insulated-jackets",
+            "https://outdoors.example/reviews/insulated-jackets",
+            "https://outdoors.example/guides/insulated-jackets",
+        ):
+            with self.subTest(url=url):
+                result = self._run(
+                    [self._item("Insulated jacket")],
+                    [
+                        {
+                            "title": "Insulated jackets",
+                            "url": url,
+                            "display_title": "Insulated jackets",
+                            "kind": "related_web_result",
+                            "editorial": False,
+                        }
+                    ],
+                    ["https://cdn.example/jacket.jpg"],
+                )
+                card = result["groups"][0]["card"]
+                self.assertNotEqual(card["url"], url)
+                self.assertTrue(
+                    card["url"].startswith("https://www.google.com/search")
+                )
 
     def test_every_gear_item_gets_a_card(self) -> None:
         items = [

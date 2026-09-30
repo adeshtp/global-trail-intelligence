@@ -62,6 +62,13 @@ function rank(value: ProductDifficulty): number {
   return ORDER.indexOf(value);
 }
 
+/** The recorded grades that make up one product label, for filtering. */
+export function gradesForProduct(label: ProductDifficulty): string[] {
+  return Object.entries(GRADE_TO_PRODUCT)
+    .filter(([, product]) => product === label)
+    .map(([grade]) => grade);
+}
+
 /** Product label for a recorded OSM grade, or null when unrecognised. */
 export function productDifficultyForGrade(
   grade: string | null | undefined,

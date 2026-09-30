@@ -7,16 +7,21 @@ import logging
 import math
 import os
 import re
+import time
 import unicodedata
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
+from dataclasses import asdict, dataclass, field
+from enum import Enum
+from functools import lru_cache
 from difflib import SequenceMatcher
-from typing import Any
+from typing import Annotated, Any, Literal, get_args
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from shapely.geometry import box, shape
 from unidecode import unidecode
 
 from app.core.config import settings
+from app.ml.feature_contract import GRADE_INDEX, GRADES
 from app.services.postpass import (
     PostpassRelation,
     PostpassWay,
@@ -25,6 +30,7 @@ from app.services.postpass import (
     find_relations_by_names,
     get_relation,
     get_way,
+    measure_geometry_completeness,
 )
 from app.services.rate_limit import discovery_limiter
 from app.services.trail_discovery import (
@@ -106,6 +112,25 @@ MAX_TILES = max(
     1,
     min(int(os.getenv("MAX_DISCOVERY_TILES", "40")), 64),
 )
+# Queries a search may spend re-querying capped tiles as quadrants, four per
+# split. Deliberately separate from the tile grid: a region wide enough to fill
+# MAX_TILES used to leave only what the grid left over (4 queries, one split),
+# so a live Switzerland search stopped after 4 splits with 59 areas still cut.
+# This bounds a pathological search; the time budget below is what governs a
+# normal one.
+MAX_SPLIT_QUERIES = max(
+    4,
+    min(int(os.getenv("MAX_DISCOVERY_SPLIT_QUERIES", "200")), 1000),
+)
+
+# The longest a search may keep starting new provider queries. Past it, no new
+# tile is queried and no capped tile is split further; what was skipped or cut
+# is reported in `coverage`, and the results found so far are returned. A query
+# already in flight is bounded by its own provider timeout.
+DISCOVERY_TIME_BUDGET_SECONDS = max(
+    0.0,
+    float(os.getenv("DISCOVERY_TIME_BUDGET_SECONDS", "60")),
+)
 # Bounded concurrency for tiled Postpass queries, kept well inside the public
 # service's tolerance.
 TILE_CONCURRENCY = max(
@@ -167,7 +192,9 @@ PEAK_SEARCH_BBOX_KM = max(
 
 HIKING_ROUTE_TYPES = {"hiking", "foot", "walking"}
 PATH_HIGHWAYS = {"path", "footway", "bridleway", "steps"}
-NON_TRAIL_TRACK_HIGHWAYS = {"track", "pedestrian"}
+# `pedestrian` is deliberately absent: it is a street with the cars taken off
+# it. It is in URBAN_HIGHWAYS, so it is accepted only with real hiking evidence.
+NON_TRAIL_TRACK_HIGHWAYS = {"track"}
 # Highways that are not inherently trail-shaped but may still carry a real
 # named path in regions with coarse tagging. These are only ever considered
 # in the WEAK accept branch, never on their own.
@@ -414,6 +441,18 @@ PAVED_SURFACES = {
     "paving_stones",
     "sett",
     "bitumen",
+}
+
+# Highways that are streets or street furniture rather than trails.
+URBAN_HIGHWAYS = {
+    "pedestrian",
+    "residential",
+    "unclassified",
+    "living_street",
+    "tertiary",
+    "secondary",
+    "primary",
+    "service",
 }
 
 
@@ -759,6 +798,170 @@ def _tile_plan(
     return tiles, plan
 
 
+# A capped tile is split no finer than this, so rows that all share one
+# location cannot be halved forever.
+MIN_SPLIT_SPAN_DEG = 0.02
+
+
+@dataclass
+class _QueryBudget:
+    """Tile queries still allowed for this search, shared by every tile."""
+
+    remaining: int
+
+    def take(self, count: int) -> bool:
+        if count > self.remaining:
+            return False
+        self.remaining -= count
+        return True
+
+
+@dataclass
+class _TileHarvest:
+    """Rows found by re-querying capped tiles, and how much is still cut."""
+
+    ways: list[Any] = field(default_factory=list)
+    relations: list[Any] = field(default_factory=list)
+    ways_truncated: int = 0
+    relations_truncated: int = 0
+    splits: int = 0
+    # Re-queries that raised. Their rows are unknown, so the harvest is
+    # reported incomplete and is not remembered.
+    failed: int = 0
+
+    def merge(self, other: "_TileHarvest") -> None:
+        self.ways.extend(other.ways)
+        self.relations.extend(other.relations)
+        self.ways_truncated += other.ways_truncated
+        self.relations_truncated += other.relations_truncated
+        self.splits += other.splits
+        self.failed += other.failed
+
+
+def _quadrants(
+    tile: tuple[float, float, float, float],
+) -> list[tuple[float, float, float, float]]:
+    west, south, east, north = tile
+    mid_lon = (west + east) / 2
+    mid_lat = (south + north) / 2
+    return [
+        (west, south, mid_lon, mid_lat),
+        (mid_lon, south, east, mid_lat),
+        (west, mid_lat, mid_lon, north),
+        (mid_lon, mid_lat, east, north),
+    ]
+
+
+async def _expand_truncated(
+    tile: tuple[float, float, float, float],
+    *,
+    relation_rows: Any,
+    way_rows: Any,
+    relation_limit: int,
+    way_limit: int,
+    budget: _QueryBudget,
+    semaphore: asyncio.Semaphore,
+    deadline: float | None = None,
+) -> _TileHarvest:
+    """
+    Re-query a capped tile as four quadrants, recursively, within the budget.
+
+    A query that returns as many rows as its LIMIT has cut rows the search
+    never saw. Splitting the tile gives each part its own LIMIT, so dense
+    areas are read in full instead of being truncated by name order. Only the
+    kind that was capped is re-queried. The rows passed in are not returned
+    again; only what the quadrants add is.
+
+    Whatever cannot be resolved, because the shared budget is spent or the
+    tile is already at the minimum size or the time ``deadline`` has passed, is
+    counted in ``*_truncated`` and reported, never hidden. A failed re-query counts the same way: its rows
+    are unknown.
+    """
+    need_relations = bool(getattr(relation_rows, "truncated", False))
+    need_ways = bool(getattr(way_rows, "truncated", False))
+    harvest = _TileHarvest()
+    if not (need_relations or need_ways):
+        return harvest
+
+    west, south, east, north = tile
+    half_span = max(north - south, east - west) / 2
+    out_of_time = deadline is not None and time.monotonic() >= deadline
+    if half_span < MIN_SPLIT_SPAN_DEG or out_of_time or not budget.take(4):
+        harvest.relations_truncated += int(need_relations)
+        harvest.ways_truncated += int(need_ways)
+        return harvest
+    harvest.splits += 1
+
+    async def _quadrant(
+        quadrant: tuple[float, float, float, float],
+    ) -> _TileHarvest:
+        async def _skip() -> None:
+            return None
+
+        async with semaphore:
+            # A query that waited for a slot may have waited past the deadline
+            # (hundreds can queue at once); it is then not run, and the area
+            # is reported as still cut.
+            if deadline is not None and time.monotonic() >= deadline:
+                skipped = _TileHarvest()
+                skipped.relations_truncated = int(need_relations)
+                skipped.ways_truncated = int(need_ways)
+                return skipped
+            relations, ways = await asyncio.gather(
+                discover_relations_in_bbox(quadrant, limit=relation_limit)
+                if need_relations
+                else _skip(),
+                discover_named_trail_ways_in_bbox(quadrant, limit=way_limit)
+                if need_ways
+                else _skip(),
+                return_exceptions=True,
+            )
+        found = _TileHarvest()
+        for rows, kind in ((relations, "relations"), (ways, "ways")):
+            if isinstance(rows, BaseException):
+                logger.warning(
+                    "Re-query of a capped %s tile failed: %s", kind, rows
+                )
+                setattr(found, f"{kind}_truncated", 1)
+                found.failed += 1
+            elif rows is not None:
+                getattr(found, kind).extend(rows)
+        child = await _expand_truncated(
+            quadrant,
+            relation_rows=None if isinstance(relations, BaseException) else relations,
+            way_rows=None if isinstance(ways, BaseException) else ways,
+            relation_limit=relation_limit,
+            way_limit=way_limit,
+            budget=budget,
+            semaphore=semaphore,
+            deadline=deadline,
+        )
+        found.merge(child)
+        return found
+
+    for part in await asyncio.gather(
+        *(_quadrant(quadrant) for quadrant in _quadrants(tile))
+    ):
+        harvest.merge(part)
+    return harvest
+
+
+def _dedupe_rows(rows: list[Any], attribute: str) -> list[Any]:
+    """
+    Keep the first row per OSM id.
+
+    A way or relation that crosses a tile boundary appears in both tiles.
+    OSM identity, not position, decides identity, so the first row wins.
+    Nothing is merged or synthesised.
+    """
+    unique: dict[int, Any] = {}
+    for row in rows:
+        row_id = getattr(row, attribute, None)
+        if isinstance(row_id, int):
+            unique.setdefault(row_id, row)
+    return list(unique.values())
+
+
 def _geometry_segments(
     geometry: dict[str, Any] | None,
 ) -> list[list[list[float]]]:
@@ -920,10 +1123,18 @@ def _distance_from_search(
     points = _geometry_points(geometry)
     if not points:
         return None
-    return min(
-        _haversine_km(latitude, longitude, point[1], point[0])
-        for point in points
-    )
+    # Only the nearest point matters, so it is found with a cheap planar
+    # comparison and measured once, exactly. A haversine per point of every
+    # candidate dominated ranking on large areas. Longitude is wrapped so a
+    # search beside the antimeridian still finds the nearer side.
+    cos_latitude = math.cos(math.radians(latitude))
+
+    def planar_squared(point: list[float]) -> float:
+        d_lon = (point[0] - longitude + 180.0) % 360.0 - 180.0
+        return (d_lon * cos_latitude) ** 2 + (point[1] - latitude) ** 2
+
+    nearest = min(points, key=planar_squared)
+    return _haversine_km(latitude, longitude, nearest[1], nearest[0])
 
 
 def _geometry_hash(geometry: dict[str, Any] | None) -> str | None:
@@ -1082,10 +1293,16 @@ def _stable_id(prefix: str, values: list[Any]) -> str:
 
 
 def _normalise_name(value: Any) -> str:
+    return _normalise_text(str(value or ""))
+
+
+@lru_cache(maxsize=131072)
+def _normalise_text(value: str) -> str:
+    """Pure in the string, and called hundreds of thousands of times."""
     text = unidecode(
         unicodedata.normalize(
             "NFKC",
-            str(value or ""),
+            value,
         )
     ).strip().casefold()
     text = text.replace("&", " and ")
@@ -1311,6 +1528,17 @@ def _named_way_evidence(
     width = _normalise_name(way.width)
     sport = _normalise_name(way.sport)
 
+    # foot=designated is how mappers mark a pedestrian street or a paved
+    # cycle/foot path. On a street or a built-up surface it says nothing about
+    # hiking, and it was the only evidence behind Brunswick Street and
+    # Redbraes Place appearing as Edinburgh trails. On natural ground it still
+    # counts, so countryside paths keep their evidence.
+    foot_designated = (
+        foot == "designated"
+        and surface not in PAVED_SURFACES
+        and highway not in URBAN_HIGHWAYS
+    )
+
     # ---------------------------------------------------------------
     # CHANNEL 1 - STRUCTURAL EVIDENCE
     # ---------------------------------------------------------------
@@ -1323,7 +1551,7 @@ def _named_way_evidence(
     if visibility:
         score += 88.0
         reasons.append(f"trail_visibility={visibility}")
-    if foot == "designated":
+    if foot_designated:
         score += 74.0
         reasons.append("foot=designated")
     if way.trailblazed:
@@ -1403,7 +1631,7 @@ def _named_way_evidence(
         route in HIKING_ROUTE_TYPES
         or sac
         or visibility
-        or foot == "designated"
+        or foot_designated
         or way.trailblazed
         or way.designation
         or way.hiking
@@ -1423,7 +1651,7 @@ def _named_way_evidence(
     durable_evidence = bool(
         sac
         or visibility
-        or foot == "designated"
+        or foot_designated
         or semantic_score >= 90.0
         or destination_words
     )
@@ -1434,8 +1662,17 @@ def _named_way_evidence(
     if not name:
         return False, 0.0, ["unnamed feature"], "none"
     # A bare number or single character is a mapper artifact or a survey
-    # marker, never a trail identity.
-    if len(name) < 3 or not any(ch.isalpha() for ch in name):
+    # marker, never a trail identity, unless a recorded grade or visibility
+    # says it is a marked path: the numbered paths of the Vallorcine valley
+    # ("16", "23") carry sac_scale=mountain_hiking and are real trails. The
+    # name is kept exactly as mapped; nothing is invented for it. Only a short
+    # trail number qualifies, so an id or a phone number never does.
+    numbered_trail = bool(
+        re.fullmatch(r"\d{1,4}[a-z]?", name) and (sac or visibility)
+    )
+    if not numbered_trail and (
+        len(name) < 3 or not any(ch.isalpha() for ch in name)
+    ):
         return False, 0.0, ["non-descriptive name"], "none"
     if way.length_km <= 0.0:
         return False, 0.0, ["zero-length geometry"], "none"
@@ -1550,16 +1787,7 @@ def _named_way_evidence(
     # well it is named. "North Giri Veethi" is a town street in a town. A real
     # trail is mapped as a path, footway, track or bridleway, and a route
     # relation or a grade tag overrides this too.
-    urban_highway = highway in {
-        "pedestrian",
-        "residential",
-        "unclassified",
-        "living_street",
-        "tertiary",
-        "secondary",
-        "primary",
-        "service",
-    }
+    urban_highway = highway in URBAN_HIGHWAYS
     names_a_place_on_trail = bool(
         names_a_place
         and surface not in PAVED_SURFACES
@@ -1578,7 +1806,7 @@ def _named_way_evidence(
         route in HIKING_ROUTE_TYPES
         or bool(sac)
         or bool(visibility)
-        or foot == "designated"
+        or foot_designated
         or bool(way.trailblazed)
         or bool(way.designation)
         or bool(way.hiking)
@@ -2382,12 +2610,57 @@ def _component_from_ways(
 # ============================================================
 
 
+# A way is part of a same-named route only if it lies along it: at least this
+# share of its length within about 5 m of the route's line. A bounding box is
+# not that test (a long route's box covers a whole region), and a way that only
+# crosses or touches a route is another trail that happens to meet it.
+ALONG_TOLERANCE_DEGREES = 0.00005
+ALONG_FRACTION = 0.9
+
+
+def _lies_along(
+    way_geometry: dict[str, Any] | None,
+    route_geometry: dict[str, Any] | None,
+    route_buffers: dict[int, Any],
+) -> bool:
+    way_segments = _geometry_segments(way_geometry)
+    route_segments = _geometry_segments(route_geometry)
+    if not way_segments or not route_segments:
+        return False
+    try:
+        line = shape({"type": "MultiLineString", "coordinates": way_segments})
+        key = id(route_geometry)
+        if key not in route_buffers:
+            # Built once per route, and only when a same-named way needs it.
+            route_buffers[key] = shape(
+                {"type": "MultiLineString", "coordinates": route_segments}
+            ).buffer(ALONG_TOLERANCE_DEGREES)
+        buffered = route_buffers[key]
+        if line.length == 0:
+            return bool(buffered.contains(line))
+        return (
+            line.intersection(buffered).length
+            >= ALONG_FRACTION * line.length
+        )
+    except Exception as exc:
+        # A geometry that cannot be tested is not evidence the way is part of
+        # the route, and dropping it would hide a trail.
+        logger.warning("Could not test whether a way lies along a route: %s", exc)
+        return False
+
+
 def _collapse_connected_named_ways(
     candidates: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    relation_names_with_bounds: list[
-        tuple[str, tuple[float, float, float, float]]
-    ] = []
+    # Relations by name, so each way is compared with the routes that share
+    # its name and not with every route (20,000 ways against 2,000 relations
+    # was tens of millions of comparisons).
+    relations_by_name: dict[
+        str,
+        list[
+            tuple[tuple[float, float, float, float], dict[str, Any] | None]
+        ],
+    ] = defaultdict(list)
     for candidate in candidates:
         if candidate.get("osm_type") != "relation":
             continue
@@ -2398,7 +2671,10 @@ def _collapse_connected_named_ways(
         ]:
             key = _normalise_name(name)
             if key and bounds is not None:
-                relation_names_with_bounds.append((key, bounds))
+                relations_by_name[key].append(
+                    (bounds, candidate.get("geometry"))
+                )
+    route_buffers: dict[int, Any] = {}
 
     # Member ways of an accepted route (relation or connected component) are
     # that route's sections, not independent trails — whatever name they
@@ -2441,9 +2717,13 @@ def _collapse_connected_named_ways(
         name_key = _normalise_name(candidate.get("name"))
         way_bounds = _geometry_bounds(candidate.get("geometry"))
         duplicate_relation = any(
-            name_key == relation_name
-            and _bounds_overlap(way_bounds, relation_bounds)
-            for relation_name, relation_bounds in relation_names_with_bounds
+            _bounds_overlap(way_bounds, relation_bounds)
+            and _lies_along(
+                candidate.get("geometry"), relation_geometry, route_buffers
+            )
+            for relation_bounds, relation_geometry in relations_by_name.get(
+                name_key, ()
+            )
         )
         if duplicate_relation:
             continue
@@ -2753,6 +3033,148 @@ def _candidate_sort_key(item: dict[str, Any]) -> tuple[Any, ...]:
     )
 
 
+# ------------------------------------------------------------
+# Sorting and filtering the ranked list
+# ------------------------------------------------------------
+
+class SortOrder(str, Enum):
+    relevance = "relevance"
+    nearest = "nearest"
+    longest = "longest"
+    shortest = "shortest"
+    easiest = "easiest"
+
+
+# The recorded OSM grades a filter may name: the same list the difficulty model
+# is trained on. The interface groups them into Easy / Moderate / Hard / Very
+# Hard, so the backend keeps one vocabulary and never a second grouping.
+GradeName = Literal[
+    "strolling",
+    "hiking",
+    "mountain_hiking",
+    "demanding_mountain_hiking",
+    "alpine_hiking",
+    "demanding_alpine_hiking",
+    "difficult_alpine_hiking",
+]
+GRADE_NAMES: tuple[str, ...] = get_args(GradeName)
+assert set(GRADE_NAMES) == set(GRADES), "GradeName drifted from the contract"
+
+
+@dataclass(frozen=True)
+class ResultView:
+    """How the caller wants the ranked list ordered and narrowed."""
+
+    sort: SortOrder = SortOrder.relevance
+    grades: frozenset[str] = frozenset()
+    min_length_km: float | None = None
+    max_length_km: float | None = None
+
+    @property
+    def filtered(self) -> bool:
+        return bool(
+            self.grades
+            or self.min_length_km is not None
+            or self.max_length_km is not None
+        )
+
+
+def _grade_rank(item: dict[str, Any]) -> int | None:
+    """
+    The hardest recorded grade on a trail, as an index into ``GRADES``.
+
+    A trail made of several ways can carry several grades; the hardest is the
+    one a hiker has to be ready for. None when nothing is recorded.
+    """
+    values = item.get("source_difficulty_values") or [
+        item.get("source_difficulty")
+    ]
+    ranks = [
+        GRADE_INDEX[str(value).strip().casefold()]
+        for value in values
+        if value and str(value).strip().casefold() in GRADE_INDEX
+    ]
+    return max(ranks) if ranks else None
+
+
+def _length_of(item: dict[str, Any]) -> float | None:
+    try:
+        return float(item["length_km"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _matches_view(item: dict[str, Any], view: ResultView) -> bool:
+    if view.grades:
+        rank = _grade_rank(item)
+        if rank is None or GRADES[rank] not in view.grades:
+            return False
+    length = _length_of(item)
+    if view.min_length_km is not None and (
+        length is None or length < view.min_length_km
+    ):
+        return False
+    if view.max_length_km is not None and (
+        length is None or length > view.max_length_km
+    ):
+        return False
+    return True
+
+
+def _view_key(item: dict[str, Any], sort: SortOrder) -> tuple[Any, ...]:
+    """Sort key for an explicit order; ties fall back to the default ranking,
+    so the order is total and every page continues the same sequence."""
+    length = _length_of(item)
+    if sort is SortOrder.nearest:
+        try:
+            primary: tuple[Any, ...] = (
+                float(item["distance_from_search_km"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            primary = (1e9,)
+    elif sort is SortOrder.longest:
+        primary = (length is None, -(length or 0.0))
+    elif sort is SortOrder.shortest:
+        primary = (length is None, length or 0.0)
+    else:  # easiest
+        rank = _grade_rank(item)
+        primary = (rank is None, rank or 0)
+    return (*primary, *_candidate_sort_key(item))
+
+
+def _apply_view(
+    mapped: list[dict[str, Any]],
+    unmapped: list[dict[str, Any]],
+    view: ResultView,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """
+    Narrow and order the whole ranked set, before it is cut into pages.
+
+    Trails with no verified shape have no measured length or grade, so a
+    filter on either hides them rather than pretending they match.
+    """
+    if view.filtered:
+        mapped = [item for item in mapped if _matches_view(item, view)]
+        unmapped = []
+    if view.sort is not SortOrder.relevance:
+        mapped = sorted(mapped, key=lambda item: _view_key(item, view.sort))
+    return mapped, unmapped
+
+
+def _view_summary(
+    view: ResultView, *, matched: int, before: int
+) -> dict[str, Any]:
+    return {
+        "sort": view.sort.value,
+        "grades": sorted(view.grades, key=GRADE_INDEX.__getitem__),
+        "min_length_km": view.min_length_km,
+        "max_length_km": view.max_length_km,
+        "filtered": view.filtered,
+        "matched": matched,
+        "before_filters": before,
+    }
+
+
 def _looks_like_exact_trail_query(place: str) -> bool:
     """
     True when the query names a route rather than a place.
@@ -2887,6 +3309,354 @@ def _enforce_discovery_limit(request: Request | None) -> None:
         )
 
 
+async def _timed_assemble(started: float, **kwargs: Any) -> dict[str, Any]:
+    """
+    Assemble the response and record where the time went.
+
+    ``started`` is when discovery began, so ``providers`` is everything up to
+    the point the provider rows were in hand and ``assemble`` is the
+    evidence, ranking and response stage after it.
+    """
+    providers_done = time.monotonic()
+    result = await _assemble_discovery_result(**kwargs)
+    finished = time.monotonic()
+    timings = {
+        "providers": round((providers_done - started) * 1000),
+        "assemble": round((finished - providers_done) * 1000),
+    }
+    result.setdefault("diagnostics", {})["timings_ms"] = timings
+    logger.info(
+        "Discovery for %r: providers %d ms, assemble %d ms",
+        kwargs.get("place"),
+        timings["providers"],
+        timings["assemble"],
+    )
+    return result
+
+
+# ------------------------------------------------------------
+# One search, one harvest
+# ------------------------------------------------------------
+
+# How long the rows read for a search are kept, and how many searches are kept.
+# Every page of a search, and its enrichment, ranks the same rows: without this
+# each request read the providers again, reached the time budget at a different
+# point and ranked a different set (a live Switzerland search returned 13,412,
+# 20,292 and 23,639 ranked trails for identical parameters, and each request
+# took 84-113 s). Entries can hold tens of thousands of rows, so few are kept.
+HARVEST_CACHE_TTL_SECONDS = max(
+    0.0,
+    float(os.getenv("DISCOVERY_CACHE_TTL_SECONDS", "300")),
+)
+HARVEST_CACHE_MAX_ENTRIES = max(
+    1,
+    min(int(os.getenv("DISCOVERY_CACHE_MAX_ENTRIES", "2")), 16),
+)
+
+
+@dataclass
+class _Harvest:
+    """The provider rows for one search, and how completely they were read."""
+
+    # A list of rows, or the exception the provider raised: a failed read is
+    # reported by the assembly stage as a provider failure, never as "empty".
+    relations: Any
+    ways: Any
+    tile_plan: dict[str, Any]
+
+    @property
+    def complete(self) -> bool:
+        """True only when nothing failed, so it is safe to remember."""
+        return not (
+            isinstance(self.relations, BaseException)
+            or isinstance(self.ways, BaseException)
+            or self.tile_plan.get("tiles_failed", 0)
+            or self.tile_plan.get("queries_failed", 0)
+        )
+
+
+_HARVEST_CACHE: OrderedDict[tuple[Any, ...], tuple[float, _Harvest]] = (
+    OrderedDict()
+)
+_HARVEST_INFLIGHT: dict[tuple[Any, ...], asyncio.Task[_Harvest]] = {}
+
+
+def _harvest_key(
+    search_bbox: tuple[float, float, float, float],
+    scope: str,
+    center: tuple[float, float] | None = None,
+) -> tuple[Any, ...]:
+    # Where the search started decides which tiles are read first, so it only
+    # matters (and only splits the cache) when the area is tiled and a time
+    # limit could leave some unread.
+    tiled = len(_tile_plan(search_bbox)[0]) > 1
+    return (
+        tuple(round(value, 5) for value in search_bbox),
+        scope,
+        (round(center[0], 2), round(center[1], 2))
+        if tiled and center is not None
+        else None,
+        AREA_RELATION_ROW_LIMIT,
+        AREA_WAY_ROW_LIMIT,
+        MAX_TILES,
+        MAX_SPLIT_QUERIES,
+        # The providers themselves, so a substituted provider never shares an
+        # entry with the real one.
+        discover_relations_in_bbox,
+        discover_named_trail_ways_in_bbox,
+    )
+
+
+def _copy_harvest(harvest: _Harvest) -> _Harvest:
+    """Same rows, own tile plan: the plan is mutated downstream."""
+    return _Harvest(
+        harvest.relations, harvest.ways, dict(harvest.tile_plan)
+    )
+
+
+async def _harvest_cached(
+    search_bbox: tuple[float, float, float, float],
+    scope: str,
+    place: str,
+    deadline: float,
+    center: tuple[float, float] | None = None,
+) -> _Harvest:
+    key = _harvest_key(search_bbox, scope, center)
+    cached = _HARVEST_CACHE.get(key)
+    if (
+        cached is not None
+        and time.monotonic() - cached[0] < HARVEST_CACHE_TTL_SECONDS
+    ):
+        _HARVEST_CACHE.move_to_end(key)
+        return _copy_harvest(cached[1])
+
+    # Identical requests at the same time share one read.
+    task = _HARVEST_INFLIGHT.get(key)
+    if task is None:
+        task = asyncio.create_task(
+            _harvest_rows(search_bbox, scope, place, deadline, center)
+        )
+        _HARVEST_INFLIGHT[key] = task
+    try:
+        harvest = await asyncio.shield(task)
+    finally:
+        if task.done() and _HARVEST_INFLIGHT.get(key) is task:
+            _HARVEST_INFLIGHT.pop(key, None)
+
+    if harvest.complete:
+        _HARVEST_CACHE[key] = (time.monotonic(), harvest)
+        _HARVEST_CACHE.move_to_end(key)
+        while len(_HARVEST_CACHE) > HARVEST_CACHE_MAX_ENTRIES:
+            _HARVEST_CACHE.popitem(last=False)
+    return _copy_harvest(harvest)
+
+
+def _outward_from(
+    tiles: list[tuple[float, float, float, float]],
+    center: tuple[float, float] | None,
+) -> list[tuple[float, float, float, float]]:
+    """
+    Tiles nearest the searched place first.
+
+    Every tile is queued at once and the queue is first come, first served, so
+    this is the order they are read in. When the time budget runs out, the
+    tiles left unread are then the ones farthest from where the user searched,
+    not whichever lay at the far end of the grid.
+    """
+    if center is None:
+        return tiles
+    latitude, longitude = center
+    scale = math.cos(math.radians(latitude))
+
+    def distance(tile: tuple[float, float, float, float]) -> float:
+        return math.hypot(
+            ((tile[0] + tile[2]) / 2 - longitude) * scale,
+            (tile[1] + tile[3]) / 2 - latitude,
+        )
+
+    return sorted(tiles, key=distance)
+
+
+async def _harvest_rows(
+    search_bbox: tuple[float, float, float, float],
+    scope: str,
+    place: str,
+    deadline: float,
+    center: tuple[float, float] | None = None,
+) -> _Harvest:
+    """Read the relations and named ways for a search area from Postpass."""
+    tiles, tile_plan = _tile_plan(search_bbox)
+    tiles = _outward_from(tiles, center)
+    if len(tiles) == 1:
+        # Small area: one query for each kind, no accounting overhead.
+        limits = (
+            (AREA_RELATION_ROW_LIMIT, AREA_WAY_ROW_LIMIT)
+            if scope == "area"
+            else (200, 2000)
+        )
+        relation_task = asyncio.create_task(
+            discover_relations_in_bbox(search_bbox, limit=limits[0])
+        )
+        way_task = asyncio.create_task(
+            discover_named_trail_ways_in_bbox(search_bbox, limit=limits[1])
+        )
+        tile_plan["tiles_queried"] = 1
+        relation_result, way_result = await asyncio.gather(
+            relation_task, way_task, return_exceptions=True
+        )
+
+        # The one tile may itself be capped. Split it so a dense place is read
+        # in full, and report whatever is still cut.
+        extra = await _expand_truncated(
+            search_bbox,
+            relation_rows=(
+                None
+                if isinstance(relation_result, BaseException)
+                else relation_result
+            ),
+            way_rows=(
+                None if isinstance(way_result, BaseException) else way_result
+            ),
+            relation_limit=limits[0],
+            way_limit=limits[1],
+            budget=_QueryBudget(MAX_SPLIT_QUERIES),
+            semaphore=asyncio.Semaphore(TILE_CONCURRENCY),
+            deadline=deadline,
+        )
+        if extra.relations:
+            relation_result = _dedupe_rows(
+                [*relation_result, *extra.relations], "relation_id"
+            )
+        if extra.ways:
+            way_result = _dedupe_rows([*way_result, *extra.ways], "way_id")
+        tile_plan["rows_truncated"] = {
+            "relations": extra.relations_truncated,
+            "ways": extra.ways_truncated,
+        }
+        tile_plan["tiles_split"] = extra.splits
+        tile_plan["queries_failed"] = extra.failed
+        return _Harvest(relation_result, way_result, tile_plan)
+
+    per_tile_ways = max(400, AREA_WAY_ROW_LIMIT // len(tiles))
+    per_tile_relations = max(100, AREA_RELATION_ROW_LIMIT // len(tiles))
+    way_hits: list[Any] = []
+    relation_hits: list[Any] = []
+    counters = {
+        "queried": 0,
+        "failed": 0,
+        "queries_failed": 0,
+        "relations_truncated": 0,
+        "ways_truncated": 0,
+        "splits": 0,
+    }
+    semaphore = asyncio.Semaphore(TILE_CONCURRENCY)
+    # Splits have their own budget, not what the grid leaves over.
+    budget = _QueryBudget(MAX_SPLIT_QUERIES)
+
+    async def _one(tile: tuple[float, float, float, float]) -> None:
+        async with semaphore:
+            # A tile that only gets a slot after the budget is spent is not
+            # queried; it is reported as skipped.
+            if time.monotonic() >= deadline:
+                return
+            way_rows, relation_rows = await asyncio.gather(
+                discover_named_trail_ways_in_bbox(tile, limit=per_tile_ways),
+                discover_relations_in_bbox(tile, limit=per_tile_relations),
+                return_exceptions=True,
+            )
+        if isinstance(way_rows, BaseException) and isinstance(
+            relation_rows, BaseException
+        ):
+            counters["failed"] += 1
+            return
+        counters["queried"] += 1
+        # One kind failing leaves the tile half read.
+        counters["queries_failed"] += isinstance(
+            way_rows, BaseException
+        ) + isinstance(relation_rows, BaseException)
+        if not isinstance(way_rows, BaseException):
+            way_hits.extend(way_rows)
+        if not isinstance(relation_rows, BaseException):
+            relation_hits.extend(relation_rows)
+        extra = await _expand_truncated(
+            tile,
+            relation_rows=(
+                None
+                if isinstance(relation_rows, BaseException)
+                else relation_rows
+            ),
+            way_rows=(
+                None if isinstance(way_rows, BaseException) else way_rows
+            ),
+            relation_limit=per_tile_relations,
+            way_limit=per_tile_ways,
+            budget=budget,
+            semaphore=semaphore,
+            deadline=deadline,
+        )
+        way_hits.extend(extra.ways)
+        relation_hits.extend(extra.relations)
+        counters["relations_truncated"] += extra.relations_truncated
+        counters["ways_truncated"] += extra.ways_truncated
+        counters["splits"] += extra.splits
+        counters["queries_failed"] += extra.failed
+
+    # Every tile is scheduled at once; the semaphore alone bounds how many
+    # run. Awaiting fixed batches made each batch wait for its slowest tile.
+    await asyncio.gather(*(_one(tile) for tile in tiles))
+
+    # A way or relation that crosses a tile boundary appears in two tiles. OSM
+    # identity, not position, decides identity, so the first row wins.
+    tile_plan["tiles_queried"] = counters["queried"]
+    tile_plan["tiles_failed"] = counters["failed"]
+    tile_plan["queries_failed"] = counters["queries_failed"]
+    tile_plan["rows_truncated"] = {
+        "relations": counters["relations_truncated"],
+        "ways": counters["ways_truncated"],
+    }
+    tile_plan["tiles_split"] = counters["splits"]
+    tile_plan["tiles_skipped"] = len(tiles) - counters["queried"]
+    if tile_plan["tiles_skipped"] > 0:
+        logger.warning(
+            "Discovery coverage is incomplete for %r: %d of %d tiles were "
+            "not searched.",
+            place,
+            tile_plan["tiles_skipped"],
+            len(tiles),
+        )
+    return _Harvest(
+        _dedupe_rows(relation_hits, "relation_id"),
+        _dedupe_rows(way_hits, "way_id"),
+        tile_plan,
+    )
+
+
+def _semantic_outcome(place: str, agent_result: Any) -> TrailDiscoveryResult:
+    """The semantic layer's result, or an honest stand-in when it has none."""
+    if agent_result is None:
+        return TrailDiscoveryResult(
+            place=place,
+            trails=[],
+            agent_available=False,
+            provider="searxng+gemini",
+            provider_status="pending",
+            error=None,
+        )
+    if isinstance(agent_result, Exception):
+        logger.warning(
+            "Semantic trail discovery failed for %r: %s", place, agent_result
+        )
+        return TrailDiscoveryResult(
+            place=place,
+            trails=[],
+            agent_available=False,
+            provider="searxng+gemini",
+            provider_status="unavailable",
+            error="Semantic discovery failed",
+        )
+    return agent_result
+
+
 async def _run_discovery(
     *,
     latitude: float,
@@ -2899,6 +3669,7 @@ async def _run_discovery(
     place_kind: str = "area",
     page: int = 1,
     page_size: int = MAX_MAP_READY_RESULTS,
+    view: ResultView = ResultView(),
 ) -> dict[str, Any]:
     """
     Shared discovery implementation.
@@ -2909,7 +3680,12 @@ async def _run_discovery(
     honest UNMAPPED candidates. The full result is a superset of the
     verified-only result, so a client may render the first and then replace
     it with the second.
+
+    The Postpass rows are read once per search (``_harvest_cached``), so every
+    page and the enrichment rank the same set.
     """
+    started = time.monotonic()
+    deadline = started + DISCOVERY_TIME_BUDGET_SECONDS
     agent_task: asyncio.Task | None = None
     if include_semantic:
         agent_task = asyncio.create_task(
@@ -2919,215 +3695,62 @@ async def _run_discovery(
                 longitude=longitude,
             )
         )
-    tiles, tile_plan = _tile_plan(search_bbox)
-    if len(tiles) == 1:
-        # Small area: one query, no accounting overhead.
-        relation_task = asyncio.create_task(
-            discover_relations_in_bbox(
-                search_bbox,
-                limit=AREA_RELATION_ROW_LIMIT if scope == "area" else 200,
-            )
-        )
-        way_task = asyncio.create_task(
-            discover_named_trail_ways_in_bbox(
-                search_bbox,
-                limit=AREA_WAY_ROW_LIMIT if scope == "area" else 2000,
-            )
-        )
-        tile_plan["tiles_queried"] = 1
-    else:
-        per_tile_ways = max(
-            400,
-            AREA_WAY_ROW_LIMIT // len(tiles),
-        )
-        per_tile_relations = max(
-            100,
-            AREA_RELATION_ROW_LIMIT // len(tiles),
-        )
 
-        async def _query_tiles() -> tuple[list[Any], list[Any], dict[str, int]]:
-            way_hits: list[Any] = []
-            relation_hits: list[Any] = []
-            counters = {"queried": 0, "failed": 0, "skipped": 0}
-            semaphore = asyncio.Semaphore(TILE_CONCURRENCY)
-
-            async def _one(
-                tile: tuple[float, float, float, float],
-            ) -> None:
-                async with semaphore:
-                    way_rows, relation_rows = await asyncio.gather(
-                        discover_named_trail_ways_in_bbox(
-                            tile,
-                            limit=per_tile_ways,
-                        ),
-                        discover_relations_in_bbox(
-                            tile,
-                            limit=per_tile_relations,
-                        ),
-                        return_exceptions=True,
-                    )
-                if isinstance(way_rows, BaseException) and isinstance(
-                    relation_rows,
-                    BaseException,
-                ):
-                    counters["failed"] += 1
-                    return
-                counters["queried"] += 1
-                if not isinstance(way_rows, BaseException):
-                    way_hits.extend(way_rows)
-                if not isinstance(relation_rows, BaseException):
-                    relation_hits.extend(relation_rows)
-
-            for batch in (
-                tiles[i : i + TILE_CONCURRENCY * 2]
-                for i in range(0, len(tiles), TILE_CONCURRENCY * 2)
-            ):
-                await asyncio.gather(*(_one(tile) for tile in batch))
-            return way_hits, relation_hits, counters
-
-        tiles_task = asyncio.create_task(_query_tiles())
-        relation_task = None
-        way_task = None
-        tile_results = await asyncio.gather(
-            tiles_task,
-            agent_task if agent_task is not None else asyncio.sleep(0),
-            return_exceptions=True,
-        )
-        tile_way_rows, tile_relation_rows, counters = tile_results[0]
-        agent_result = tile_results[1] if agent_task is not None else None
-
-        if isinstance(tile_way_rows, BaseException):
-            way_result = []
-        else:
-            # A way that crosses a tile boundary appears in two tiles. OSM
-            # identity, not position, decides identity, so the first row wins
-            # and duplicates are dropped. Nothing is merged or synthesised.
-            deduped: dict[int, Any] = {}
-            for row in tile_way_rows:
-                way_id = getattr(row, "way_id", None)
-                if isinstance(way_id, int):
-                    deduped.setdefault(way_id, row)
-            way_result = list(deduped.values())
-
-        if isinstance(tile_relation_rows, BaseException):
-            relation_result = []
-        else:
-            deduped_relations: dict[int, Any] = {}
-            for row in tile_relation_rows:
-                relation_id = getattr(row, "relation_id", None)
-                if isinstance(relation_id, int):
-                    deduped_relations.setdefault(relation_id, row)
-            relation_result = list(deduped_relations.values())
-
-        tile_plan["tiles_queried"] = counters["queried"]
-        tile_plan["tiles_failed"] = counters["failed"]
-        tile_plan["tiles_skipped"] = len(tiles) - counters["queried"]
-        if tile_plan["tiles_skipped"] > 0:
-            logger.warning(
-                "Discovery coverage is incomplete for %r: %d of %d tiles were "
-                "not searched.",
-                place,
-                tile_plan["tiles_skipped"],
-                len(tiles),
-            )
-
-        if agent_result is None:
-            semantic_result = TrailDiscoveryResult(
-                place=place,
-                trails=[],
-                agent_available=False,
-                provider="searxng+gemini",
-                provider_status="pending",
-                error=None,
-            )
-        elif isinstance(agent_result, Exception):
-            logger.warning(
-                "Semantic trail discovery failed for %r: %s",
-                place,
-                agent_result,
-            )
-            semantic_result = TrailDiscoveryResult(
-                place=place,
-                trails=[],
-                agent_available=False,
-                provider="searxng+gemini",
-                provider_status="unavailable",
-                error="Semantic discovery failed",
-            )
-        else:
-            semantic_result = agent_result
-
-        return await _assemble_discovery_result(
-            place=place,
-            scope=scope,
-            latitude=latitude,
-            longitude=longitude,
-            search_bbox=search_bbox,
-            bbox_source=bbox_source,
-            semantic_result=semantic_result,
-            relation_result=relation_result,
-            way_result=way_result,
-            include_semantic=include_semantic,
-            agent_result=agent_result,
-            tile_plan=tile_plan,
-            place_kind=place_kind,
-            page=page,
-            page_size=page_size,
-        )
-
-    pending = [
-        task
-        for task in (agent_task, relation_task, way_task)
-        if task is not None
-    ]
-    gathered = await asyncio.gather(
-        *pending,
-        return_exceptions=True,
+    harvest = await _harvest_cached(
+        search_bbox, scope, place, deadline, (latitude, longitude)
     )
-    results = list(gathered)
-    agent_result = results.pop(0) if agent_task is not None else None
-    relation_result, way_result = results
 
-    if agent_result is None:
-        semantic_result = TrailDiscoveryResult(
-            place=place,
-            trails=[],
-            agent_available=False,
-            provider="searxng+gemini",
-            provider_status="pending",
-            error=None,
+    agent_result: Any = None
+    if agent_task is not None:
+        (agent_result,) = await asyncio.gather(
+            agent_task, return_exceptions=True
         )
-    elif isinstance(agent_result, Exception):
-        logger.warning("Semantic trail discovery failed for %r: %s", place, agent_result)
-        semantic_result = TrailDiscoveryResult(
-            place=place,
-            trails=[],
-            agent_available=False,
-            provider="searxng+gemini",
-            provider_status="unavailable",
-            error="Semantic discovery failed",
-        )
-    else:
-        semantic_result = agent_result
 
-    return await _assemble_discovery_result(
+    return await _timed_assemble(
+        started,
         place=place,
         scope=scope,
         latitude=latitude,
         longitude=longitude,
         search_bbox=search_bbox,
         bbox_source=bbox_source,
-        semantic_result=semantic_result,
-        relation_result=relation_result,
-        way_result=way_result,
+        semantic_result=_semantic_outcome(place, agent_result),
+        relation_result=harvest.relations,
+        way_result=harvest.ways,
         include_semantic=include_semantic,
         agent_result=agent_result,
-        tile_plan=tile_plan,
+        tile_plan=harvest.tile_plan,
         place_kind=place_kind,
         page=page,
         page_size=page_size,
+        view=view,
     )
 
+
+def _discovery_status(
+    *,
+    provider_failed: bool,
+    no_provider_data: bool,
+    has_results: bool,
+    filtered_to_nothing: bool,
+) -> str:
+    """
+    Success, partial, unavailable, no_provider_data or empty.
+
+    Filters that leave nothing are not an outage and not an empty area: trails
+    existed, so a failing provider makes the search partial and a healthy one
+    makes it a success with nothing matching.
+    """
+    has_trails = has_results or filtered_to_nothing
+    if provider_failed and has_trails:
+        return "partial"
+    if provider_failed:
+        return "unavailable"
+    if no_provider_data:
+        return "no_provider_data"
+    if has_trails:
+        return "success"
+    return "empty"
 
 
 async def _assemble_discovery_result(
@@ -3147,6 +3770,7 @@ async def _assemble_discovery_result(
     place_kind: str = "area",
     page: int = 1,
     page_size: int = MAX_MAP_READY_RESULTS,
+    view: ResultView = ResultView(),
 ) -> dict[str, Any]:
     """
     Turn raw Postpass rows plus the optional semantic layer into the response.
@@ -3394,9 +4018,26 @@ async def _assemble_discovery_result(
         key=_candidate_sort_key,
     )
     unmapped = [item for item in discovered if not item.get("map_ready")]
+    trails_before_view = len(mapped) + len(unmapped)
+    # An explicit sort or filter applies to the whole ranked set, before it is
+    # cut into pages, so page 2 continues the order and every count below
+    # follows the filter.
+    mapped, unmapped = _apply_view(mapped, unmapped, view)
     returned_mapped = mapped[
         (page - 1) * page_size : page * page_size
     ]
+    # Measured for the page being returned only: a route in several pieces
+    # says how large its gaps are, so a card is never read as one continuous
+    # trail when it is not. Single lines have nothing to report.
+    for item in returned_mapped:
+        geometry = item.get("geometry")
+        if (
+            isinstance(geometry, dict)
+            and geometry.get("type") == "MultiLineString"
+        ):
+            item["geometry_completeness"] = asdict(
+                measure_geometry_completeness(geometry.get("coordinates") or [])
+            )
     total_ranked = len(mapped)
     has_more = (page * page_size) < total_ranked
     # Verified trails beyond this page are held back rather than discarded,
@@ -3420,6 +4061,12 @@ async def _assemble_discovery_result(
     tiles_total = int(tile_plan.get("tiles_total", 1))
     tiles_queried = int(tile_plan.get("tiles_queried", 1))
     tiles_skipped = int(tile_plan.get("tiles_skipped", 0))
+    rows_truncated = {
+        "relations": int(
+            (tile_plan.get("rows_truncated") or {}).get("relations", 0)
+        ),
+        "ways": int((tile_plan.get("rows_truncated") or {}).get("ways", 0)),
+    }
     no_provider_data = (
         providers_answered
         and provider_rows == 0
@@ -3433,16 +4080,15 @@ async def _assemble_discovery_result(
     # outage was reported as a successful empty search.
     provider_failed = any(provider_errors.values())
 
-    if provider_failed and ordered:
-        status = "partial"
-    elif provider_failed:
-        status = "unavailable"
-    elif no_provider_data:
-        status = "no_provider_data"
-    elif ordered:
-        status = "success"
-    else:
-        status = "empty"
+    status = _discovery_status(
+        provider_failed=provider_failed,
+        no_provider_data=no_provider_data,
+        has_results=bool(ordered),
+        # Trails were found and the caller's filters removed every one.
+        filtered_to_nothing=bool(
+            view.filtered and trails_before_view and not ordered
+        ),
+    )
 
     center_lat = (search_bbox[1] + search_bbox[3]) / 2.0
     area_km2 = round(
@@ -3553,12 +4199,19 @@ async def _assemble_discovery_result(
             "tiles_queried": tiles_queried,
             "tiles_failed": int(tile_plan.get("tiles_failed", 0)),
             "tiles_skipped": tiles_skipped,
+            # Areas whose query still returned as many rows as its cap after
+            # every allowed split. Rows there may exist that were never seen.
+            "rows_truncated": rows_truncated,
+            "tiles_split": int(tile_plan.get("tiles_split", 0)),
             # A search that returned no provider rows did not achieve
-            # coverage, and neither did one whose provider failed outright.
+            # coverage, and neither did one whose provider failed outright,
+            # or one that still had rows cut off.
             "coverage_complete": (
                 tiles_skipped == 0
                 and not no_provider_data
                 and not provider_failed
+                and not any(rows_truncated.values())
+                and not int(tile_plan.get("queries_failed", 0))
             ),
             "provider_returned_no_rows": no_provider_data,
             # Distinguishes "the source was asked and had nothing" from "the
@@ -3657,6 +4310,11 @@ async def _assemble_discovery_result(
             "unmapped": len(unmapped),
             "provider_returned_no_rows": no_provider_data,
         },
+        "view": _view_summary(
+            view,
+            matched=len(mapped) + len(unmapped),
+            before=trails_before_view,
+        ),
         "enrichment_pending": not include_semantic,
     }
 
@@ -3674,6 +4332,10 @@ async def discover_trails(
     page_size: int = Query(
         MAX_MAP_READY_RESULTS, ge=1, le=MAX_MAP_READY_RESULTS
     ),
+    sort: Annotated[SortOrder, Query()] = SortOrder.relevance,
+    grade: Annotated[list[GradeName] | None, Query()] = None,
+    min_length_km: Annotated[float | None, Query(ge=0)] = None,
+    max_length_km: Annotated[float | None, Query(ge=0)] = None,
     request: Request = None,
 ):
     """
@@ -3710,6 +4372,12 @@ async def discover_trails(
         place_kind=place_kind,
         page=page,
         page_size=page_size,
+        view=ResultView(
+            sort=sort,
+            grades=frozenset(grade or ()),
+            min_length_km=min_length_km,
+            max_length_km=max_length_km,
+        ),
     )
 
 
@@ -3726,6 +4394,10 @@ async def enrich_trails(
     page_size: int = Query(
         MAX_MAP_READY_RESULTS, ge=1, le=MAX_MAP_READY_RESULTS
     ),
+    sort: Annotated[SortOrder, Query()] = SortOrder.relevance,
+    grade: Annotated[list[GradeName] | None, Query()] = None,
+    min_length_km: Annotated[float | None, Query(ge=0)] = None,
+    max_length_km: Annotated[float | None, Query(ge=0)] = None,
     request: Request = None,
 ):
     """
@@ -3762,5 +4434,11 @@ async def enrich_trails(
         place_kind=place_kind,
         page=page,
         page_size=page_size,
+        view=ResultView(
+            sort=sort,
+            grades=frozenset(grade or ()),
+            min_length_km=min_length_km,
+            max_length_km=max_length_km,
+        ),
     )
 

@@ -17,6 +17,7 @@ from unidecode import unidecode
 
 from app.core.config import settings
 from app.services import overpass as overpass_fallback
+from app.services.rate_limit import CircuitBreaker, ProviderOutage
 
 
 logger = logging.getLogger(__name__)
@@ -371,7 +372,34 @@ async def _execute_sql(
             _SQL_INFLIGHT.pop(sql, None)
 
 
+# Consecutive outage failures open this, and queries then fail at once (so
+# callers use the Overpass fallback) instead of each paying the full retry
+# cost. Refusals such as a 4xx do not count: the server answered.
+postpass_breaker = CircuitBreaker("postpass")
+
+
 async def _execute_sql_uncached(
+    sql: str,
+) -> list[dict[str, Any]]:
+    if not postpass_breaker.allow():
+        raise ProviderOutage(
+            "Postpass is temporarily skipped after repeated failures; "
+            "it will be tried again shortly"
+        )
+    try:
+        rows = await _execute_sql_request(sql)
+    except ProviderOutage:
+        postpass_breaker.record_failure()
+        raise
+    except Exception:
+        # The server answered, even if it refused this query.
+        postpass_breaker.record_success()
+        raise
+    postpass_breaker.record_success()
+    return rows
+
+
+async def _execute_sql_request(
     sql: str,
 ) -> list[dict[str, Any]]:
     """
@@ -421,12 +449,20 @@ async def _execute_sql_uncached(
                 )
         except Exception as exc:
             last_error = f"Postpass request failed: {exc}"
+            # A timeout is not retried. A hung public host does not answer on
+            # an immediate second try (a hang cost 3 x 30 s), and the Overpass
+            # fallback is the better use of the time.
+            if isinstance(exc, httpx.TimeoutException):
+                raise ProviderOutage(
+                    f"Postpass timed out after "
+                    f"{POSTPASS_TIMEOUT_SECONDS:g} s"
+                ) from exc
             if attempt < POSTPASS_SERVER_RETRIES:
                 await asyncio.sleep(
                     POSTPASS_SERVER_BACKOFF_SECONDS * (attempt + 1)
                 )
                 continue
-            raise RuntimeError(last_error) from exc
+            raise ProviderOutage(last_error) from exc
 
         if response.status_code == 200:
             break
@@ -443,13 +479,18 @@ async def _execute_sql_uncached(
                 POSTPASS_SERVER_BACKOFF_SECONDS * (attempt + 1)
             )
             continue
-        raise RuntimeError(
+        failure = (
             "Postpass returned HTTP "
             f"{response.status_code}: "
             f"{response.text.strip()[:500]}"
         )
+        raise (
+            ProviderOutage(failure)
+            if response.status_code >= 500
+            else RuntimeError(failure)
+        )
     else:
-        raise RuntimeError(
+        raise ProviderOutage(
             last_error or "Postpass is unavailable"
         )
 
@@ -1073,6 +1114,218 @@ def _match_score(
 # ============================================================
 
 
+# Line ends closer than this are one continuous line whose ways simply never
+# shared a node. Live data: about a third of the gaps between the pieces of a
+# fragmented relation are this small.
+CONNECTED_TOLERANCE_KM = 0.025
+# A gap this large, or no piece holding at least half the mapped length, means
+# the pieces are separate paths rather than one route with holes in it.
+SEPARATE_GAP_KM = 2.0
+DOMINANT_CHAIN_SHARE = 0.5
+# Past this many separate chains the gaps are not worth computing: it is a
+# scattered network of paths, and the answer would cost seconds to state.
+MAX_CHAINS_FOR_GAP_TREE = 250
+_KM_PER_DEGREE = 111.195
+# Grid cell for finding line ends that nearly touch, in degrees of latitude.
+_GRID_CELL_DEGREES = 0.0005
+
+
+@dataclass(frozen=True)
+class GeometryCompleteness:
+    """
+    How continuous a route's mapped geometry is.
+
+    ``chain_count`` counts pieces after joining any whose ends are within
+    ``CONNECTED_TOLERANCE_KM``. ``total_gap_km`` is the shortest distance that
+    would have to be added to make them one line and ``largest_gap_km`` the
+    biggest single hole in that. Both are measurements of what is missing,
+    never geometry: no coordinate is added or moved. They are ``None`` when a
+    network has too many separate chains for the gaps to be measured.
+    """
+
+    status: str  # "connected" | "gaps" | "separate_pieces"
+    part_count: int
+    chain_count: int
+    largest_gap_km: float | None
+    total_gap_km: float | None
+    main_chain_share: float
+    note: str | None
+
+
+def _end_distance_km(first: list[float], second: list[float]) -> float:
+    """
+    Distance between two points, on a flat local approximation.
+
+    Within a few tens of kilometres this agrees with haversine to well under
+    1%, and it avoids the trigonometry that dominated the cost of comparing
+    thousands of line ends.
+    """
+    mean_latitude = math.radians((first[1] + second[1]) / 2.0)
+    return math.hypot(
+        (second[0] - first[0]) * math.cos(mean_latitude) * _KM_PER_DEGREE,
+        (second[1] - first[1]) * _KM_PER_DEGREE,
+    )
+
+
+def measure_geometry_completeness(
+    parts: list[list[list[float]]],
+) -> GeometryCompleteness:
+    """
+    Measure gaps between the pieces of a route from their line ends.
+
+    Pure measurement over the geometry as given. Pieces are grouped into
+    chains where ends nearly touch, then the chains are linked by the
+    shortest possible gaps (a minimum spanning tree over end-to-end
+    distances), which is the least that is missing from the map.
+    """
+    lines = [line for line in parts if len(line) >= 2]
+
+    def connected(count: int) -> GeometryCompleteness:
+        return GeometryCompleteness(
+            status="connected",
+            part_count=count,
+            chain_count=min(count, 1),
+            largest_gap_km=0.0,
+            total_gap_km=0.0,
+            main_chain_share=1.0,
+            note=None,
+        )
+
+    if len(lines) <= 1:
+        return connected(len(lines))
+
+    ends = [(line[0], line[-1]) for line in lines]
+    parent = list(range(len(lines)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    # Ends are bucketed on a grid so only neighbouring ends are compared,
+    # instead of every piece against every other. A grid cell is widened in
+    # longitude so it is never narrower than the tolerance at this latitude.
+    cell_lat = _GRID_CELL_DEGREES
+    cell_lon = cell_lat / max(0.2, math.cos(math.radians(lines[0][0][1])))
+    grid: dict[tuple[int, int], list[tuple[int, int, list[float]]]] = {}
+    touching: set[tuple[int, int]] = set()
+    for index, pair in enumerate(ends):
+        for side, point in enumerate(pair):
+            cell = (int(point[0] // cell_lon), int(point[1] // cell_lat))
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    for other, other_side, other_point in grid.get(
+                        (cell[0] + dx, cell[1] + dy), ()
+                    ):
+                        if other == index:
+                            continue
+                        if (
+                            _end_distance_km(point, other_point)
+                            <= CONNECTED_TOLERANCE_KM
+                        ):
+                            touching.add((index, side))
+                            touching.add((other, other_side))
+                            if find(index) != find(other):
+                                parent[find(other)] = find(index)
+            grid.setdefault(cell, []).append((index, side, point))
+
+    chains: dict[int, list[int]] = {}
+    for index in range(len(lines)):
+        chains.setdefault(find(index), []).append(index)
+    members = list(chains.values())
+    if len(members) == 1:
+        return connected(len(lines))
+
+    lengths = [overpass_fallback._line_length_km(line) for line in lines]
+    chain_lengths = [sum(lengths[i] for i in chain) for chain in members]
+    main_share = round(max(chain_lengths) / (sum(chain_lengths) or 1.0), 3)
+
+    if len(members) > MAX_CHAINS_FOR_GAP_TREE:
+        return GeometryCompleteness(
+            status="separate_pieces",
+            part_count=len(lines),
+            chain_count=len(members),
+            largest_gap_km=None,
+            total_gap_km=None,
+            main_chain_share=main_share,
+            note=(
+                f"The mapped geometry is {len(members)} separate pieces, the "
+                f"largest holding {main_share:.0%} of the mapped length. This "
+                f"is a scattered network of paths, not one route; the gaps "
+                f"between the pieces were not measured."
+            ),
+        )
+
+    # Only a chain's free ends can be gaps: an end already joined to another
+    # piece is inside the chain.
+    chain_ends: list[list[list[float]]] = []
+    for chain in members:
+        free = [
+            ends[i][side]
+            for i in chain
+            for side in (0, 1)
+            if (i, side) not in touching
+        ]
+        chain_ends.append(free or [ends[i][side] for i in chain for side in (0, 1)])
+
+    def chain_gap(a: int, b: int) -> float:
+        return min(
+            _end_distance_km(x, y)
+            for x in chain_ends[a]
+            for y in chain_ends[b]
+        )
+
+    # Prim's algorithm: grow one tree from chain 0 by the shortest gap.
+    edges: list[float] = []
+    best = {i: chain_gap(0, i) for i in range(1, len(members))}
+    while best:
+        nearest = min(best, key=best.__getitem__)
+        edges.append(best.pop(nearest))
+        for other in best:
+            best[other] = min(best[other], chain_gap(nearest, other))
+
+    largest = round(max(edges), 3)
+    total = round(sum(edges), 3)
+    if largest > SEPARATE_GAP_KM or main_share < DOMINANT_CHAIN_SHARE:
+        status = "separate_pieces"
+        note = (
+            f"The mapped geometry is {len(members)} separate pieces, the "
+            f"largest holding {main_share:.0%} of the mapped length, with "
+            f"gaps of up to {largest:.1f} km between them. This is closer to "
+            f"a collection of separate paths than one continuous route."
+        )
+    else:
+        status = "gaps"
+        note = (
+            f"The mapped geometry has {len(members) - 1} gap"
+            f"{'s' if len(members) > 2 else ''} totalling {total:.2f} km "
+            f"(largest {largest:.2f} km). Distances cover the mapped pieces "
+            f"only; nothing is drawn across the gaps."
+        )
+    return GeometryCompleteness(
+        status=status,
+        part_count=len(lines),
+        chain_count=len(members),
+        largest_gap_km=largest,
+        total_gap_km=total,
+        main_chain_share=main_share,
+        note=note,
+    )
+
+
+class BboxRows(list):
+    """
+    Rows returned for one bounding box, plus whether the query was capped.
+
+    ``truncated`` is True when the query returned as many rows as its
+    ``LIMIT``, which means rows may exist that were never seen. It is a plain
+    list otherwise, so callers that only iterate are unaffected.
+    """
+
+    truncated: bool = False
+
+
 async def discover_relations_in_bbox(
     bbox: tuple[
         float,
@@ -1082,7 +1335,7 @@ async def discover_relations_in_bbox(
     ],
     *,
     limit: int = 100,
-) -> list[PostpassRelation]:
+) -> BboxRows:
     """
     Discover named hiking/foot route relations with rendered geometry
     overlapping the requested geographic area.
@@ -1197,6 +1450,7 @@ ORDER BY
         THEN 0
         ELSE 1
     END,
+    l.length_m DESC NULLS LAST,
     lower(COALESCE(r.tags->>'name', r.tags->>'name:en', r.tags->>'int_name', r.tags->>'official_name', r.tags->>'alt_name', r.tags->>'loc_name', r.tags->>'short_name')),
     r.id
 LIMIT {safe_limit}
@@ -1221,9 +1475,7 @@ LIMIT {safe_limit}
             limit=safe_limit,
         )
 
-    relations: list[
-        PostpassRelation
-    ] = []
+    relations = BboxRows()
 
     for row in rows:
         relation = _relation_from_row(
@@ -1241,6 +1493,10 @@ LIMIT {safe_limit}
         relations.append(
             relation
         )
+
+    # Judged on the rows the query returned, not the ones that survived the
+    # checks above: a capped query is capped even if some rows were unusable.
+    relations.truncated = len(rows) >= safe_limit
 
     _cache_set(
         cache_key,
@@ -1350,7 +1606,7 @@ async def discover_named_trail_ways_in_bbox(
     ],
     *,
     limit: int = 2000,
-) -> list[PostpassWay]:
+) -> BboxRows:
     """
     Discover named, trail-capable OSM ways with real Postpass geometry.
 
@@ -1462,6 +1718,7 @@ ORDER BY
         WHEN l.tags->>'highway' IN ('footway', 'track') THEN 5
         ELSE 6
     END,
+    l.length_m DESC NULLS LAST,
     lower(l.tags->>'name'),
     l.osm_id
 LIMIT {safe_limit}
@@ -1480,7 +1737,7 @@ LIMIT {safe_limit}
             limit=safe_limit,
         )
 
-    ways: list[PostpassWay] = []
+    ways = BboxRows()
 
     for row in rows:
         way = _way_from_row(row)
@@ -1489,6 +1746,8 @@ LIMIT {safe_limit}
             continue
 
         ways.append(way)
+
+    ways.truncated = len(rows) >= safe_limit
 
     _cache_set(
         cache_key,
@@ -2047,24 +2306,7 @@ LIMIT 1
     return relation
 
 
-async def get_way(
-    way_id: int,
-) -> PostpassWay | None:
-    """Fetch one named OSM way with its real Postpass geometry."""
-    try:
-        way_id = int(way_id)
-    except (TypeError, ValueError):
-        return None
-    if way_id <= 0:
-        return None
-
-    cache_key = ("way", way_id)
-    if _cache_has(cache_key):
-        return _cache_get(cache_key)
-
-    sql = f"""
-SELECT
-    l.osm_id AS way_id,
+_WAY_COLUMNS = """    l.osm_id AS way_id,
     l.tags->>'name' AS name,
     l.tags->>'name:en' AS name_en,
     l.tags->>'int_name' AS int_name,
@@ -2089,7 +2331,110 @@ SELECT
     ST_NPoints(l.geom) AS point_count,
     ROUND((l.length_m / 1000.0)::numeric, 3) AS length_km,
     ST_AsGeoJSON(l.geom)::json AS geometry
-FROM postpass_line AS l
+"""
+
+# Ways fetched per query. Each row carries its full geometry, so this keeps
+# one response comfortably small while a long route costs a handful of queries.
+WAY_BULK_CHUNK = 200
+
+
+async def get_ways(way_ids: Any) -> dict[int, PostpassWay]:
+    """
+    Fetch many named OSM ways with real Postpass geometry, in bulk.
+
+    A long route has hundreds of member ways; fetching each with its own query
+    made selecting one take minutes. Ways already seen are served from the
+    same cache ``get_way`` uses, the rest are fetched ``WAY_BULK_CHUNK`` at a
+    time, and a way Postpass does not hold is simply absent from the result.
+    If a chunk's query fails, its ways are looked up one by one through the
+    Overpass fallback, as ``get_way`` would.
+    """
+    wanted: list[int] = []
+    for raw in way_ids:
+        try:
+            way_id = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if way_id > 0 and way_id not in wanted:
+            wanted.append(way_id)
+
+    found: dict[int, PostpassWay] = {}
+    missing: list[int] = []
+    for way_id in wanted:
+        key = ("way", way_id)
+        if _cache_has(key):
+            cached = _cache_get(key)
+            if cached is not None:
+                found[way_id] = cached
+        else:
+            missing.append(way_id)
+
+    semaphore = asyncio.Semaphore(3)
+
+    async def fetch(chunk: list[int]) -> dict[int, PostpassWay]:
+        listed = ", ".join(str(way_id) for way_id in chunk)
+        sql = f"""
+SELECT
+{_WAY_COLUMNS}FROM postpass_line AS l
+WHERE l.osm_type = 'W'
+  AND l.osm_id IN ({listed})
+  AND l.tags ? 'name'
+"""
+        try:
+            async with semaphore:
+                rows = await _execute_sql(sql)
+        except Exception as exc:
+            logger.warning(
+                "Postpass bulk way lookup failed for %d ways; "
+                "using Overpass fallback: %s",
+                len(chunk),
+                exc,
+            )
+            recovered: dict[int, PostpassWay] = {}
+            for way_id in chunk:
+                try:
+                    way = await overpass_fallback.overpass_get_way(way_id)
+                except Exception:
+                    way = None
+                if way is not None:
+                    recovered[way_id] = way
+            return recovered
+        chunk_found: dict[int, PostpassWay] = {}
+        for row in rows:
+            way = _way_from_row(row)
+            if way is not None:
+                chunk_found[way.way_id] = way
+        for way_id in chunk:
+            _cache_set(("way", way_id), chunk_found.get(way_id))
+        return chunk_found
+
+    chunks = [
+        missing[i : i + WAY_BULK_CHUNK]
+        for i in range(0, len(missing), WAY_BULK_CHUNK)
+    ]
+    for part in await asyncio.gather(*(fetch(chunk) for chunk in chunks)):
+        found.update(part)
+    return found
+
+
+async def get_way(
+    way_id: int,
+) -> PostpassWay | None:
+    """Fetch one named OSM way with its real Postpass geometry."""
+    try:
+        way_id = int(way_id)
+    except (TypeError, ValueError):
+        return None
+    if way_id <= 0:
+        return None
+
+    cache_key = ("way", way_id)
+    if _cache_has(cache_key):
+        return _cache_get(cache_key)
+
+    sql = f"""
+SELECT
+{_WAY_COLUMNS}FROM postpass_line AS l
 WHERE l.osm_type = 'W'
   AND l.osm_id = {way_id}
   AND l.tags ? 'name'

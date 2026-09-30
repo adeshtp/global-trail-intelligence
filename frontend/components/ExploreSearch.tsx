@@ -2,6 +2,7 @@
 
 import {
   FormEvent,
+  KeyboardEvent,
   useEffect,
   useRef,
   useState,
@@ -37,6 +38,20 @@ type LocationResult = {
   type?: string;
   addresstype?: string;
 };
+
+
+type Suggestion = {
+  label: string;
+  detail: string;
+  osm_type: "node" | "way" | "relation";
+  osm_id: number;
+  latitude: number;
+  longitude: number;
+};
+
+const SUGGEST_MIN_CHARS = 3;
+const SUGGEST_DEBOUNCE_MS = 250;
+const SUGGEST_LIST_ID = "location-suggestions";
 
 
 type SearchResponse = {
@@ -488,11 +503,368 @@ export default function ExploreSearch({
     );
 
 
+  const [
+    suggestions,
+    setSuggestions,
+  ] = useState<Suggestion[]>([]);
+
+
+  const [
+    highlighted,
+    setHighlighted,
+  ] = useState(-1);
+
+
+  const suggestTimerRef =
+    useRef<ReturnType<typeof setTimeout> | null>(
+      null
+    );
+
+
+  const suggestAbortRef =
+    useRef<AbortController | null>(
+      null
+    );
+
+
+  /*
+   * ============================================================
+   * SUGGESTIONS (type-ahead)
+   * ============================================================
+   *
+   * Driven from the input's onChange only, never from an effect on `search`:
+   * the initial query and a finished search both set `search` too, and neither
+   * should pop the list open.
+   */
+
+  function closeSuggestions() {
+
+    if (suggestTimerRef.current) {
+      clearTimeout(
+        suggestTimerRef.current
+      );
+      suggestTimerRef.current = null;
+    }
+
+    suggestAbortRef.current?.abort();
+    suggestAbortRef.current = null;
+
+    setSuggestions([]);
+    setHighlighted(-1);
+  }
+
+
+  function requestSuggestions(
+    text: string
+  ) {
+
+    closeSuggestions();
+
+    const query = text.trim();
+
+    if (query.length < SUGGEST_MIN_CHARS) {
+      return;
+    }
+
+    suggestTimerRef.current = setTimeout(
+      async () => {
+
+        suggestTimerRef.current = null;
+
+        const controller =
+          new AbortController();
+
+        suggestAbortRef.current =
+          controller;
+
+        try {
+
+          const response = await fetch(
+            `${API_BASE_URL}/api/search/suggest?q=${encodeURIComponent(
+              query
+            )}`,
+            {
+              signal:
+                controller.signal,
+            }
+          );
+
+          if (!response.ok) {
+            return;
+          }
+
+          const data =
+            (
+              await response.json()
+            ) as Suggestion[];
+
+          // A newer keystroke aborted this request and started its own.
+          if (
+            suggestAbortRef.current !==
+            controller
+          ) {
+            return;
+          }
+
+          setSuggestions(
+            Array.isArray(data)
+              ? data
+              : []
+          );
+
+        } catch {
+          // Suggestions are a convenience; a failure just shows no list.
+        }
+      },
+      SUGGEST_DEBOUNCE_MS
+    );
+  }
+
+
+  async function selectSuggestion(
+    suggestion: Suggestion
+  ) {
+
+    closeSuggestions();
+
+    requestRef.current?.abort();
+
+    const controller =
+      new AbortController();
+
+    requestRef.current =
+      controller;
+
+    setSearch(
+      suggestion.label
+    );
+
+    setIsSearching(
+      true
+    );
+
+    setError(
+      null
+    );
+
+    try {
+
+      const response = await fetch(
+        `${API_BASE_URL}/api/search/lookup?osm_type=${
+          suggestion.osm_type
+        }&osm_id=${suggestion.osm_id}`,
+        {
+          cache:
+            "no-store",
+
+          signal:
+            controller.signal,
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error(
+          `Location lookup failed: ${response.status}`
+        );
+      }
+
+      const data =
+        (
+          await response.json()
+        ) as SearchResponse;
+
+      // The user already chose: no ranking of alternatives here.
+      const result =
+        data.results?.[0];
+
+      if (!result) {
+        throw new Error(
+          "No usable result"
+        );
+      }
+
+      applyResult(
+        result,
+        suggestion.label
+      );
+
+    } catch (
+      error
+    ) {
+
+      if (
+        error instanceof
+          DOMException &&
+        error.name ===
+          "AbortError"
+      ) {
+        return;
+      }
+
+      console.error(
+        "Location lookup failed:",
+        error
+      );
+
+      setError(
+        "Could not find this location."
+      );
+
+    } finally {
+
+      if (
+        requestRef.current ===
+        controller
+      ) {
+
+        requestRef.current =
+          null;
+
+        setIsSearching(
+          false
+        );
+      }
+    }
+  }
+
+
+  function handleKeyDown(
+    event: KeyboardEvent<HTMLInputElement>
+  ) {
+
+    if (event.key === "Escape") {
+      closeSuggestions();
+      return;
+    }
+
+    if (suggestions.length === 0) {
+      return;
+    }
+
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setHighlighted(
+        (current) =>
+          (current + 1) %
+          suggestions.length
+      );
+      return;
+    }
+
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setHighlighted(
+        (current) =>
+          (current - 1 + suggestions.length) %
+          suggestions.length
+      );
+      return;
+    }
+
+    // Enter on a highlighted row picks it; with nothing highlighted it
+    // submits the typed text exactly as before.
+    if (
+      event.key === "Enter" &&
+      highlighted >= 0
+    ) {
+      event.preventDefault();
+      void selectSuggestion(
+        suggestions[highlighted]
+      );
+    }
+  }
+
+
   /*
    * ============================================================
    * LOCATION SEARCH
    * ============================================================
    */
+
+  /*
+   * Everything that happens once a place has been chosen, whether by typed
+   * search or by picking a suggestion: check it, classify it, hand it to the
+   * Explore page.
+   */
+  function applyResult(
+    result: LocationResult,
+    query: string
+  ) {
+
+    const latitude =
+      Number(
+        result.latitude
+      );
+
+
+    const longitude =
+      Number(
+        result.longitude
+      );
+
+
+    if (
+      !Number.isFinite(
+        latitude
+      ) ||
+      !Number.isFinite(
+        longitude
+      )
+    ) {
+
+      throw new Error(
+        "Invalid coordinates"
+      );
+    }
+
+
+    /*
+     * Determine whether the selected
+     * location is a broad area or a
+     * specific outdoor feature.
+     */
+    const broadAreaSearch =
+      isBroadAreaResult(
+        result,
+        query
+      );
+
+
+    setSearch(
+      query
+    );
+
+
+    /*
+     * Send all search context to
+     * app/explore/page.tsx.
+     */
+    onLocationFound(
+      {
+        latitude,
+        longitude,
+      },
+      result.display_name,
+      query,
+      broadAreaSearch,
+      broadAreaSearch
+        ? getAdministrativeSearchBounds(result)
+        : null,
+      /*
+       * The geocoder's own classification. Passing it through lets the
+       * backend recognise a summit search in any language, without a
+       * hardcoded list of place names.
+       */
+      [
+        result.class ?? "",
+        result.type ?? "",
+        result.addresstype ?? "",
+      ]
+        .filter(Boolean)
+        .join("=")
+    );
+  }
+
 
   async function performSearch(
     queryOverride?: string
@@ -595,77 +967,9 @@ export default function ExploreSearch({
       }
 
 
-      const latitude =
-        Number(
-          result.latitude
-        );
-
-
-      const longitude =
-        Number(
-          result.longitude
-        );
-
-
-      if (
-        !Number.isFinite(
-          latitude
-        ) ||
-        !Number.isFinite(
-          longitude
-        )
-      ) {
-
-        throw new Error(
-          "Invalid coordinates"
-        );
-      }
-
-
-      /*
-       * Determine whether the selected
-       * location is a broad area or a
-       * specific outdoor feature.
-       */
-      const broadAreaSearch =
-        isBroadAreaResult(
-          result,
-          query
-        );
-
-
-      setSearch(
+      applyResult(
+        result,
         query
-      );
-
-
-      /*
-       * Send all search context to
-       * app/explore/page.tsx.
-       */
-      onLocationFound(
-        {
-          latitude,
-          longitude,
-        },
-        result.display_name,
-        query,
-        broadAreaSearch,
-        broadAreaSearch
-          ? getAdministrativeSearchBounds(result)
-          : null,
-        /*
-         * The geocoder's own classification. Passing it through lets the
-         * backend recognise a summit search in any language, without a
-         * hardcoded list of place names.
-         */
-        [
-          result.class ?? "",
-          result.type ?? "",
-          result.addresstype ?? "",
-        ]
-          .filter(Boolean)
-          .join("=")
       );
 
     } catch (
@@ -727,6 +1031,7 @@ export default function ExploreSearch({
 
     event.preventDefault();
 
+    closeSuggestions();
 
     void performSearch();
   }
@@ -753,6 +1058,19 @@ export default function ExploreSearch({
    * duplicate search, while the first request is
    * allowed to finish normally.
    */
+
+  useEffect(
+    () => () => {
+      if (suggestTimerRef.current) {
+        clearTimeout(
+          suggestTimerRef.current
+        );
+      }
+      suggestAbortRef.current?.abort();
+    },
+    []
+  );
+
 
   useEffect(() => {
 
@@ -813,12 +1131,12 @@ export default function ExploreSearch({
         onSubmit={
           handleSubmit
         }
-        className="w-full"
+        className="relative w-full"
       >
 
         <div className="flex items-center rounded-2xl border border-white/10 bg-[#0d1825]/95 p-2 shadow-[0_18px_50px_rgba(0,0,0,0.20)] backdrop-blur-xl">
 
-          <span className="px-4 text-xl text-white/40">
+          <span className="px-4 text-xl text-white/60">
             ⌕
           </span>
 
@@ -840,10 +1158,34 @@ export default function ExploreSearch({
               setError(
                 null
               );
+
+
+              requestSuggestions(
+                event.target.value
+              );
             }}
+            onKeyDown={
+              handleKeyDown
+            }
+            onBlur={
+              closeSuggestions
+            }
+            role="combobox"
+            aria-expanded={
+              suggestions.length > 0
+            }
+            aria-controls={
+              SUGGEST_LIST_ID
+            }
+            aria-autocomplete="list"
+            aria-activedescendant={
+              highlighted >= 0
+                ? `${SUGGEST_LIST_ID}-${highlighted}`
+                : undefined
+            }
             placeholder="Search a mountain, trail or location..."
             autoComplete="off"
-            className="h-14 min-w-0 flex-1 bg-transparent px-2 text-sm text-white outline-none placeholder:text-white/30"
+            className="h-14 min-w-0 flex-1 bg-transparent px-2 text-sm text-white outline-none placeholder:text-white/55"
           />
 
 
@@ -865,11 +1207,71 @@ export default function ExploreSearch({
 
         </div>
 
+        {suggestions.length > 0 && (
+          <ul
+            id={
+              SUGGEST_LIST_ID
+            }
+            role="listbox"
+            className="absolute inset-x-0 top-full z-[70] mt-2 overflow-hidden rounded-2xl border border-white/10 bg-[#0d1825] py-1.5 shadow-[0_18px_50px_rgba(0,0,0,0.35)]"
+          >
+            {suggestions.map(
+              (
+                suggestion,
+                index
+              ) => (
+                <li
+                  key={`${suggestion.osm_type}-${suggestion.osm_id}`}
+                  id={`${SUGGEST_LIST_ID}-${index}`}
+                  role="option"
+                  aria-selected={
+                    index === highlighted
+                  }
+                  // mousedown, not click: the input's blur closes the list
+                  // before a click would land.
+                  onMouseDown={(
+                    event
+                  ) => {
+                    event.preventDefault();
+                    void selectSuggestion(
+                      suggestion
+                    );
+                  }}
+                  onMouseEnter={() =>
+                    setHighlighted(
+                      index
+                    )
+                  }
+                  className={`flex cursor-pointer items-baseline gap-2 px-5 py-2.5 text-sm ${
+                    index === highlighted
+                      ? "bg-white/[0.08]"
+                      : ""
+                  }`}
+                >
+                  <span className="text-white">
+                    {
+                      suggestion.label
+                    }
+                  </span>
+
+                  {suggestion.detail && (
+                    <span className="truncate text-[13px] text-white/60">
+                      {
+                        suggestion.detail
+                      }
+                    </span>
+                  )}
+                </li>
+              )
+            )}
+          </ul>
+        )}
+
       </form>
 
 
       {error && (
-        <p className="mt-3 px-2 text-xs text-red-300">
+        <p className="mt-3 px-2 text-[13px] text-red-300">
           {
             error
           }

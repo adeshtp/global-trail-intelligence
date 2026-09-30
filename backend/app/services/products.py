@@ -12,6 +12,7 @@ from urllib.parse import quote_plus, urlsplit
 import httpx
 
 from app.core.config import settings
+from app.services.rate_limit import CircuitBreaker, is_provider_outage
 
 
 logger = logging.getLogger(__name__)
@@ -35,7 +36,15 @@ GEAR_PRIORITY_RANK = {"essential": 0, "recommended": 1, "conditional": 2}
 # Gear needs that cannot be bought. Searching a real shop for an offline map
 # or a first-aid principle wastes a provider call and produces a misleading
 # card, so they are excluded from the product request entirely.
-NON_PURCHASABLE_NEEDS = {"navigation", "first_aid"}
+NON_PURCHASABLE_NEEDS = {
+    "navigation",
+    "first_aid",
+    # Plans and qualifications for a trip, not things a shop sells.
+    "overnight",
+    "resupply",
+    "acclimatisation",
+    "experience",
+}
 PRODUCT_CACHE_TTL_SECONDS = max(
     300.0,
     min(float(os.getenv("PRODUCT_CACHE_TTL_SECONDS", "1800")), 86400.0),
@@ -207,7 +216,15 @@ def _query_for_item(
         (intelligence.get("condition") or {}).get("likelihood")
     )
     phrase = _searchable_phrase(item["item"])
-    terms = [phrase, "hiking"]
+    # The activity the gear list was built for ("trekking", "mountaineering"),
+    # so a route that is not a walk is not shopped for as one.
+    activity = (
+        ((intelligence.get("gear") or {}).get("activity") or {}).get(
+            "query_term"
+        )
+        or "hiking"
+    )
+    terms = [phrase, activity]
     # The condition status values are exactly those the gear logic produces:
     # favorable, caution, adverse, unknown. An earlier set of "moderate" and
     # "high" could never match a real status, so this branch was dead and wet
@@ -333,6 +350,45 @@ def _is_editorial(title: str, snippet: str) -> bool:
         re.search(pattern, haystack, re.IGNORECASE)
         for pattern in _EDITORIAL_PATTERNS
     )
+
+
+# Path segments that identify a page as editorial whatever its title says.
+# Whole segments only: "/poles-guide" is not "/guides/".
+_EDITORIAL_URL_SEGMENTS = frozenset(
+    {
+        "blog",
+        "blogs",
+        "review",
+        "reviews",
+        "guide",
+        "guides",
+        "article",
+        "articles",
+        "news",
+        "magazine",
+        "expert-advice",
+    }
+)
+
+
+def _is_editorial_result(result: dict[str, Any]) -> bool:
+    """
+    True when a result is review or guide content by title, snippet or path.
+
+    Decides where a "Shop options" link may point. It is deliberately not
+    used to reject results from the list of related web results.
+    """
+    if result.get("editorial"):
+        return True
+    try:
+        path = urlsplit(str(result.get("url") or "")).path.casefold()
+    except ValueError:
+        return False
+    return any(
+        segment in _EDITORIAL_URL_SEGMENTS
+        for segment in path.split("/")
+    )
+
 
 # Categories that are never a hiking product, however the keyword matched.
 _OFF_TOPIC_MARKERS = (
@@ -624,6 +680,12 @@ def _cache_set(key: str, value: dict[str, Any]) -> None:
         _CACHE.popitem(last=False)
 
 
+# Opens after consecutive outage failures. A product request searches once per
+# gear item, so a hung provider otherwise costs a full timeout for each wave of
+# items, on every request (60 s measured).
+tavily_breaker = CircuitBreaker("tavily")
+
+
 async def _search_web(
     query: str,
 ) -> tuple[list[dict[str, Any]], list[str], str | None]:
@@ -633,6 +695,8 @@ async def _search_web(
     ).strip()
     if not api_key:
         return [], [], "Product search is not configured"
+    if not tavily_breaker.allow():
+        return [], [], "Product search is temporarily unavailable"
 
     try:
         transport = httpx.AsyncHTTPTransport(retries=1)
@@ -662,8 +726,14 @@ async def _search_web(
             )
             response.raise_for_status()
             payload = response.json()
-    except (httpx.HTTPError, ValueError, TypeError):
+    except (httpx.HTTPError, ValueError, TypeError) as exc:
+        if is_provider_outage(exc):
+            tavily_breaker.record_failure()
+        else:
+            # The provider answered, even if it refused this request.
+            tavily_breaker.record_success()
         return [], [], "Product search is temporarily unavailable"
+    tavily_breaker.record_success()
 
     raw_results = payload.get("results") if isinstance(payload, dict) else None
     if not isinstance(raw_results, list):
@@ -838,12 +908,15 @@ def _build_card(
 
     # Mode B. Prefer a real retailer destination that the provider actually
     # returned for this category, so the link is a page that was seen rather
-    # than a URL shape that was guessed.
+    # than a URL shape that was guessed. A review or guide is never a place to
+    # shop, however high search ranked it, so it is skipped here and, with no
+    # other destination, the card falls back to a search link.
     destination = next(
         (
             result
             for result in relevant
             if safe_public_url(result.get("url"))
+            and not _is_editorial_result(result)
         ),
         None,
     )

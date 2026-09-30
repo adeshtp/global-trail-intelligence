@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import time
 from collections import OrderedDict
+from collections.abc import Callable
+
+import httpx
 
 
 class FixedWindowRateLimiter:
@@ -37,7 +40,102 @@ class FixedWindowRateLimiter:
         return True
 
 
+class ProviderOutage(RuntimeError):
+    """
+    A provider could not be reached or answered with a server error.
+
+    Distinct from a request the provider understood and refused (a 4xx): only
+    an outage says anything about whether the provider is available, so only
+    an outage counts towards opening a ``CircuitBreaker``.
+    """
+
+
+def is_provider_outage(exc: BaseException) -> bool:
+    """
+    True when a failure says the provider is not serving us.
+
+    A dropped or timed-out connection, a server error, or throttling counts. A
+    request the provider understood and refused (a 4xx) and a body that could
+    not be parsed do not: the server answered, so nothing about its
+    availability has changed.
+    """
+    if isinstance(exc, httpx.TransportError):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        return status >= 500 or status == 429
+    return False
+
+
+class CircuitBreaker:
+    """
+    Stop calling a provider that keeps failing, then check on it later.
+
+    After ``failure_threshold`` consecutive outage failures the breaker opens
+    and ``allow()`` is False for ``cooldown_seconds``, so callers fail at once
+    (and fall back) instead of each paying the full retry cost. When the
+    cooldown ends one probe is admitted: a success closes the breaker, a
+    failure reopens it immediately. Process-local, like the limiters above.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        *,
+        failure_threshold: int = 3,
+        cooldown_seconds: float = 30.0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.name = name
+        self.failure_threshold = failure_threshold
+        self.cooldown_seconds = cooldown_seconds
+        self._clock = clock
+        self.reset()
+
+    def reset(self) -> None:
+        self._failures = 0
+        self._open_until: float | None = None
+        # While a probe is out, the time after which another may be sent, in
+        # case the probe never reports back.
+        self._probe_until: float | None = None
+
+    def allow(self) -> bool:
+        now = self._clock()
+        if self._probe_until is not None:
+            if now < self._probe_until:
+                return False
+            # The probe never reported; send another rather than stay shut.
+            self._probe_until = now + self.cooldown_seconds
+            return True
+        if self._open_until is None:
+            return True
+        if now < self._open_until:
+            return False
+        # Cooldown over: admit one probe and hold everyone else back until it
+        # reports. One more failure reopens at once.
+        self._open_until = None
+        self._probe_until = now + self.cooldown_seconds
+        self._failures = self.failure_threshold - 1
+        return True
+
+    def record_success(self) -> None:
+        self.reset()
+
+    def record_failure(self) -> None:
+        self._probe_until = None
+        self._failures += 1
+        if self._failures >= self.failure_threshold:
+            self._open_until = self._clock() + self.cooldown_seconds
+
+
+# One breaker for the whole Open-Meteo host: elevation and weather are both
+# read from it, one after the other, so a hung host must not be paid for twice.
+open_meteo_breaker = CircuitBreaker("open-meteo")
+
 discovery_limiter = FixedWindowRateLimiter()
 search_limiter = FixedWindowRateLimiter()
+# Type-ahead sends a request every pause in typing; it must never spend the
+# budget of the search the user actually submits.
+suggest_limiter = FixedWindowRateLimiter()
 intelligence_limiter = FixedWindowRateLimiter()
 enrichment_limiter = FixedWindowRateLimiter()

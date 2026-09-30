@@ -981,13 +981,13 @@ export default function CesiumMap({
     >
       {selectedTrail && !expanded ? (
         <div className="absolute left-4 top-4 z-40 max-w-[280px] rounded-2xl border border-sky-200/20 bg-[#07111f]/90 px-4 py-3 shadow-2xl backdrop-blur-xl">
-          <p className="text-[9px] font-medium uppercase tracking-[0.18em] text-sky-200/75">
+          <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-sky-200/75">
             Selected trail
           </p>
           <p className="mt-1 truncate text-sm font-semibold text-white">
             {selectedTrail.name ?? "Selected trail"}
           </p>
-          <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-white/45">
+          <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[12px] text-white/70">
             <span>
               {typeof selectedTrail.distance_km === "number" &&
               Number.isFinite(selectedTrail.distance_km)
@@ -1017,7 +1017,7 @@ export default function CesiumMap({
           }}
           aria-expanded={layersOpen}
           className={[
-            "rounded-xl border px-2 py-2.5 text-[11px] font-semibold shadow-xl backdrop-blur-xl transition",
+            "rounded-xl border px-2 py-2.5 text-[13px] font-semibold shadow-xl backdrop-blur-xl transition",
             layersOpen
               ? "border-sky-300/50 bg-sky-300/15 text-sky-100"
               : "border-white/20 bg-[#07111f]/90 text-white hover:bg-[#0b1929]",
@@ -1035,7 +1035,7 @@ export default function CesiumMap({
           }}
           aria-expanded={detailsOpen}
           className={[
-            "rounded-xl border px-2 py-2.5 text-[11px] font-semibold shadow-xl backdrop-blur-xl transition",
+            "rounded-xl border px-2 py-2.5 text-[13px] font-semibold shadow-xl backdrop-blur-xl transition",
             detailsOpen
               ? "border-sky-300/50 bg-sky-300/15 text-sky-100"
               : "border-white/20 bg-[#07111f]/90 text-white hover:bg-[#0b1929]",
@@ -1053,7 +1053,7 @@ export default function CesiumMap({
           }}
           aria-expanded={cameraOpen}
           className={[
-            "rounded-xl border px-2 py-2.5 text-[11px] font-semibold shadow-xl backdrop-blur-xl transition",
+            "rounded-xl border px-2 py-2.5 text-[13px] font-semibold shadow-xl backdrop-blur-xl transition",
             cameraOpen
               ? "border-sky-300/50 bg-sky-300/15 text-sky-100"
               : "border-white/20 bg-[#07111f]/90 text-white hover:bg-[#0b1929]",
@@ -1066,7 +1066,7 @@ export default function CesiumMap({
           type="button"
           onClick={toggle3DTerrain}
           className={[
-            "rounded-xl border px-2 py-2.5 text-[11px] font-semibold shadow-xl backdrop-blur-xl transition",
+            "rounded-xl border px-2 py-2.5 text-[13px] font-semibold shadow-xl backdrop-blur-xl transition",
             viewState === "terrain"
               ? "border-[#63E96B]/50 bg-[#63E96B]/15 text-[#e4ffe0]"
               : "border-white/20 bg-[#07111f]/90 text-white hover:bg-[#0b1929]",
@@ -1085,14 +1085,14 @@ export default function CesiumMap({
       */}
       {detailsOpen ? (
         <div className="absolute right-3 top-[104px] z-50 max-w-[260px] rounded-2xl border border-white/10 bg-[#07111f]/95 p-4 shadow-2xl backdrop-blur-xl">
-          <p className="text-[10px] font-medium uppercase tracking-[0.2em] text-white/40">
+          <p className="text-[12px] font-medium uppercase tracking-[0.2em] text-white/60">
             Details
           </p>
 
-          <p className="mt-3 text-[10px] uppercase tracking-[0.12em] text-white/25">
+          <p className="mt-3 text-[12px] uppercase tracking-[0.12em] text-white/55">
             Searched location
           </p>
-          <p className="mt-1 text-xs leading-5 text-white/80">
+          <p className="mt-1 text-[13px] leading-5 text-white/80">
             {locationName?.trim()
               ? locationName.trim()
               : "No place resolved yet"}
@@ -1100,10 +1100,10 @@ export default function CesiumMap({
 
           {selectedTrail ? (
             <>
-              <p className="mt-4 text-[10px] uppercase tracking-[0.12em] text-white/25">
+              <p className="mt-4 text-[12px] uppercase tracking-[0.12em] text-white/55">
                 Selected trail
               </p>
-              <p className="mt-1 text-xs font-semibold leading-5 text-white">
+              <p className="mt-1 text-[13px] font-semibold leading-5 text-white">
                 {selectedTrail.name?.trim() || "Unnamed trail"}
               </p>
 
@@ -1152,10 +1152,10 @@ export default function CesiumMap({
                   .map(([label, value]) => (
                     <div
                       key={label}
-                      className="flex items-baseline justify-between gap-2 text-[11px]"
+                      className="flex items-baseline justify-between gap-2 text-[13px]"
                     >
-                      <dt className="text-white/35">{label}</dt>
-                      <dd className="truncate text-right text-white/70">
+                      <dt className="text-white/60">{label}</dt>
+                      <dd className="truncate text-right text-white/80">
                         {value}
                       </dd>
                     </div>
@@ -1163,7 +1163,7 @@ export default function CesiumMap({
               </dl>
             </>
           ) : (
-            <p className="mt-4 text-[11px] leading-5 text-white/35">
+            <p className="mt-4 text-[13px] leading-5 text-white/60">
               Select a trail to see its route details.
             </p>
           )}
@@ -1172,7 +1172,7 @@ export default function CesiumMap({
 
       {layersOpen ? (
         <div className="absolute right-3 top-[104px] z-50 w-[260px] rounded-2xl border border-white/10 bg-[#07111f]/95 p-4 shadow-2xl backdrop-blur-xl">
-          <p className="text-[10px] font-medium uppercase tracking-[0.2em] text-white/40">
+          <p className="text-[12px] font-medium uppercase tracking-[0.2em] text-white/60">
             Map layers
           </p>
 
@@ -1191,8 +1191,8 @@ export default function CesiumMap({
                   : "",
               ].join(" ")}
             >
-              <span className="text-xs text-white/85">Satellite</span>
-              <span className="text-[9px] uppercase tracking-[0.12em] text-white/35">
+              <span className="text-[13px] text-white/85">Satellite</span>
+              <span className="text-[11px] uppercase tracking-[0.12em] text-white/60">
                 {satelliteAvailable
                   ? baseMap === "satellite"
                     ? "Active"
@@ -1211,8 +1211,8 @@ export default function CesiumMap({
                   : "bg-white/[0.04] hover:bg-white/[0.07]",
               ].join(" ")}
             >
-              <span className="text-xs text-white/85">OpenStreetMap</span>
-              <span className="text-[9px] uppercase tracking-[0.12em] text-white/35">
+              <span className="text-[13px] text-white/85">OpenStreetMap</span>
+              <span className="text-[11px] uppercase tracking-[0.12em] text-white/60">
                 {baseMap === "osm" ? "Active" : "Available"}
               </span>
             </button>
@@ -1222,10 +1222,10 @@ export default function CesiumMap({
 
       {cameraOpen ? (
         <div className="absolute right-3 top-[104px] z-50 w-[280px] rounded-2xl border border-white/10 bg-[#07111f]/95 p-4 shadow-2xl backdrop-blur-xl">
-          <p className="text-[10px] font-medium uppercase tracking-[0.2em] text-white/40">
+          <p className="text-[12px] font-medium uppercase tracking-[0.2em] text-white/60">
             Camera controls
           </p>
-          <p className="mt-1 text-xs text-white/35">
+          <p className="mt-1 text-[13px] text-white/60">
             Rotate, tilt, zoom and frame the trail
           </p>
 
@@ -1233,14 +1233,14 @@ export default function CesiumMap({
             <button
               type="button"
               onClick={() => void topDownView()}
-              className="rounded-xl border border-white/[0.08] bg-white/[0.035] px-3 py-2.5 text-xs font-semibold text-white/75 transition hover:bg-white/[0.08] hover:text-white"
+              className="rounded-xl border border-white/[0.08] bg-white/[0.035] px-3 py-2.5 text-[13px] font-semibold text-white/75 transition hover:bg-white/[0.08] hover:text-white"
             >
               Top down
             </button>
             <button
               type="button"
               onClick={() => void obliqueView()}
-              className="rounded-xl border border-white/[0.08] bg-white/[0.035] px-3 py-2.5 text-xs font-semibold text-white/75 transition hover:bg-white/[0.08] hover:text-white"
+              className="rounded-xl border border-white/[0.08] bg-white/[0.035] px-3 py-2.5 text-[13px] font-semibold text-white/75 transition hover:bg-white/[0.08] hover:text-white"
             >
               Oblique
             </button>
@@ -1285,14 +1285,14 @@ export default function CesiumMap({
             <button
               type="button"
               onClick={zoomIn}
-              className="rounded-xl border border-white/[0.08] bg-white/[0.035] px-3 py-2.5 text-xs font-semibold text-white/75 transition hover:bg-white/[0.08] hover:text-white"
+              className="rounded-xl border border-white/[0.08] bg-white/[0.035] px-3 py-2.5 text-[13px] font-semibold text-white/75 transition hover:bg-white/[0.08] hover:text-white"
             >
               Zoom in
             </button>
             <button
               type="button"
               onClick={zoomOut}
-              className="rounded-xl border border-white/[0.08] bg-white/[0.035] px-3 py-2.5 text-xs font-semibold text-white/75 transition hover:bg-white/[0.08] hover:text-white"
+              className="rounded-xl border border-white/[0.08] bg-white/[0.035] px-3 py-2.5 text-[13px] font-semibold text-white/75 transition hover:bg-white/[0.08] hover:text-white"
             >
               Zoom out
             </button>
@@ -1302,7 +1302,7 @@ export default function CesiumMap({
             type="button"
             onClick={() => void centerSelectedTrail()}
             disabled={!selectedTrail}
-            className="mt-2 w-full rounded-xl border border-sky-300/20 bg-sky-300/[0.06] px-3 py-2.5 text-xs font-semibold text-sky-100 transition hover:bg-sky-300/[0.11] disabled:cursor-not-allowed disabled:opacity-30"
+            className="mt-2 w-full rounded-xl border border-sky-300/20 bg-sky-300/[0.06] px-3 py-2.5 text-[13px] font-semibold text-sky-100 transition hover:bg-sky-300/[0.11] disabled:cursor-not-allowed disabled:opacity-30"
           >
             Center selected trail
           </button>
@@ -1310,7 +1310,7 @@ export default function CesiumMap({
           <button
             type="button"
             onClick={resetNorth}
-            className="mt-2 w-full rounded-xl border border-white/[0.08] bg-white/[0.035] px-3 py-2.5 text-xs font-semibold text-white/70 transition hover:bg-white/[0.08] hover:text-white"
+            className="mt-2 w-full rounded-xl border border-white/[0.08] bg-white/[0.035] px-3 py-2.5 text-[13px] font-semibold text-white/80 transition hover:bg-white/[0.08] hover:text-white"
           >
             North up
           </button>
@@ -1338,7 +1338,7 @@ export default function CesiumMap({
           type="button"
           onClick={resetNorth}
           aria-label="Reset north"
-          className="flex h-10 w-10 items-center justify-center border-b border-white/10 text-[11px] font-semibold text-white/80 transition hover:bg-white/10"
+          className="flex h-10 w-10 items-center justify-center border-b border-white/10 text-[13px] font-semibold text-white/80 transition hover:bg-white/10"
         >
           N
         </button>
@@ -1356,7 +1356,7 @@ export default function CesiumMap({
         <button
           type="button"
           onClick={onExpand}
-          className="absolute bottom-4 right-4 z-50 rounded-xl border border-white/20 bg-[#07111f]/90 px-4 py-2.5 text-xs font-medium text-white shadow-xl backdrop-blur-xl transition hover:bg-[#0b1929]"
+          className="absolute bottom-4 right-4 z-50 rounded-xl border border-white/20 bg-[#07111f]/90 px-4 py-2.5 text-[13px] font-medium text-white shadow-xl backdrop-blur-xl transition hover:bg-[#0b1929]"
         >
           Expand map ↗
         </button>
@@ -1366,7 +1366,7 @@ export default function CesiumMap({
         <button
           type="button"
           onClick={onCollapse}
-          className="absolute left-4 top-4 z-50 rounded-xl border border-white/20 bg-[#07111f]/90 px-4 py-2.5 text-xs font-medium text-white shadow-xl backdrop-blur-xl transition hover:bg-[#0b1929]"
+          className="absolute left-4 top-4 z-50 rounded-xl border border-white/20 bg-[#07111f]/90 px-4 py-2.5 text-[13px] font-medium text-white shadow-xl backdrop-blur-xl transition hover:bg-[#0b1929]"
         >
           Close
         </button>
@@ -1387,7 +1387,7 @@ export default function CesiumMap({
         }
         target="_blank"
         rel="noreferrer"
-        className="absolute bottom-1 right-1 z-40 rounded bg-white/80 px-2 py-1 text-[9px] text-black/60 underline decoration-black/20 underline-offset-1 backdrop-blur-sm hover:text-black/80"
+        className="absolute bottom-1 right-1 z-40 rounded bg-white/80 px-2 py-1 text-[11px] text-black/60 underline decoration-black/20 underline-offset-1 backdrop-blur-sm hover:text-black/80"
       >
         {baseMap === "osm"
           ? "© OpenStreetMap contributors"
