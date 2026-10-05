@@ -22,6 +22,7 @@ from unidecode import unidecode
 
 from app.core.config import settings
 from app.ml.feature_contract import GRADE_INDEX, GRADES
+from app.services.difficulty import predict_trail_difficulty
 from app.services.postpass import (
     PostpassRelation,
     PostpassWay,
@@ -2392,6 +2393,25 @@ def _way_to_trail(
     }
 
 
+def _attach_estimated_difficulty(trails: list[dict[str, Any]]) -> None:
+    """
+    Give each untagged OSM way a model-estimated difficulty tier for the list.
+
+    The list has no elevation profile, so the model runs with its terrain
+    columns absent (it was trained to handle that). The selected trail is
+    re-estimated with terrain by the enrichment route. A recorded grade is
+    never overwritten, and relations are left alone because their estimate is
+    built from verified member ways.
+    """
+    for trail in trails:
+        if trail.get("osm_type") != "way" or trail.get("source_difficulty"):
+            continue
+        estimate = predict_trail_difficulty(trail)
+        trail["estimated_difficulty_tier"] = (
+            estimate["estimate_tier"] if estimate["available"] else None
+        )
+
+
 def _unmapped_trail(
     item: DiscoveredTrail,
     *,
@@ -4048,6 +4068,7 @@ async def _assemble_discovery_result(
     # so never contribute to this number.
     mapped_truncated = max(0, total_ranked - len(returned_mapped))
     ordered = [*returned_mapped, *unmapped]
+    _attach_estimated_difficulty(ordered)
 
     # A provider that answers with zero rows for an area it was asked about is
     # not the same thing as an area with no trails in it. The public Postpass

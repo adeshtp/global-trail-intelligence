@@ -56,6 +56,25 @@ def way(
 
 
 class DiscoveryTests(unittest.TestCase):
+    def test_untagged_way_gets_estimated_tier_and_tagged_way_does_not(self) -> None:
+        base = {
+            "osm_type": "way",
+            "length_km": 2.2,
+            "highway_type": "path",
+            "geometry": {
+                "type": "LineString",
+                "coordinates": [[76.0, 10.0], [76.001, 10.001], [76.002, 10.0]],
+            },
+        }
+        untagged = {**base, "source_difficulty": None}
+        tagged = {**base, "source_difficulty": "hiking"}
+        discovery._attach_estimated_difficulty([untagged, tagged])
+        self.assertIn(
+            untagged["estimated_difficulty_tier"],
+            {"walking", "mountain", "alpine", None},
+        )
+        self.assertNotIn("estimated_difficulty_tier", tagged)
+
     def test_segment_crossing_bbox_is_detected_without_inside_vertex(self) -> None:
         geometry = line([[-1.0, -1.0], [2.0, 2.0]])
         self.assertTrue(

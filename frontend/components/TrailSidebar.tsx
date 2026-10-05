@@ -2,6 +2,8 @@
 
 import type { ReactNode } from "react";
 
+import { difficultyPresentation } from "@/components/difficultyDisplay";
+
 type Trail = {
   trail_id: string;
   osm_id: number | null;
@@ -20,6 +22,8 @@ type Trail = {
 
   source_difficulty: string | null;
   difficulty: string | null;
+  /** Model tier for an untagged way, estimated without elevation. */
+  estimated_difficulty_tier?: string | null;
   surface: string | null;
   smoothness?: string | null;
   tracktype?: string | null;
@@ -96,6 +100,10 @@ type TrailSidebarProps = {
   loading: boolean;
 
   selectedTrail: Trail | null;
+
+  // Terrain-informed tier for the selected trail, so its card agrees with
+  // the Suitability section instead of showing the elevation-free estimate.
+  selectedEstimateTier?: string | null;
 
   onTrailSelect: (
     trail: Trail
@@ -277,6 +285,7 @@ export default function TrailSidebar({
   trails,
   loading,
   selectedTrail,
+  selectedEstimateTier,
   onTrailSelect,
   counts,
   controls,
@@ -454,6 +463,16 @@ export default function TrailSidebar({
                 const trail = group.primary;
                 const selected =
                   selectedTrail?.trail_id === trail.trail_id;
+                const estimateTier =
+                  (selected ? selectedEstimateTier : null) ??
+                  trail.estimated_difficulty_tier ??
+                  null;
+                const difficultyView = difficultyPresentation({
+                  recordedGrade: trail.difficulty,
+                  officialTier: null,
+                  estimateTier,
+                  estimateAvailable: estimateTier !== null,
+                });
                 return (
                   <button
                     key={trail.trail_id}
@@ -569,13 +588,14 @@ export default function TrailSidebar({
                             </p>
 
                             <p className="mt-1 text-[13px] font-medium text-white/80">
-                              {difficultyLabel(
-                                trail.difficulty
-                              )}
+                              {difficultyView.label ??
+                                "Not available"}
                             </p>
-                            {trail.difficulty ? (
+                            {difficultyView.label ? (
                               <p className="mt-0.5 text-[11px] text-white/55">
-                                Official OSM scale
+                                {difficultyView.isOfficial
+                                  ? "Official OSM scale"
+                                  : "Estimated"}
                               </p>
                             ) : null}
                           </div>

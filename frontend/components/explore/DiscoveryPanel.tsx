@@ -72,6 +72,7 @@ type DiscoveryPanelProps = {
   pagination: TrailDiscoveryResponse["pagination"];
   peakSearch: TrailDiscoveryResponse["peak_search"];
   resultCounts: TrailDiscoveryResponse["result_counts"];
+  selectedEstimateTier: string | null;
   selectedTrailGeometry: SelectedTrail | null;
   selectedTrailSummary: Trail | null;
   setMapExpanded: Dispatch<SetStateAction<boolean>>;
@@ -96,6 +97,7 @@ export default function DiscoveryPanel({
   pagination,
   peakSearch,
   resultCounts,
+  selectedEstimateTier,
   selectedTrailGeometry,
   selectedTrailSummary,
   setMapExpanded,
@@ -142,6 +144,8 @@ export default function DiscoveryPanel({
               loading={loadingTrails}
                 
               selectedTrail={selectedTrailSummary}
+
+              selectedEstimateTier={selectedEstimateTier}
                 
               onTrailSelect={handleTrailSelect}
 

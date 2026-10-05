@@ -1391,6 +1391,11 @@ function ExplorePageContent() {
         pagination={pagination}
         peakSearch={peakSearch}
         resultCounts={resultCounts}
+        selectedEstimateTier={
+          selectedIntelligence?.difficulty.ml.available
+            ? selectedIntelligence.difficulty.ml.estimate
+            : null
+        }
         selectedTrailGeometry={selectedTrailGeometry}
         selectedTrailSummary={selectedTrailSummary}
         setMapExpanded={setMapExpanded}
